@@ -217,7 +217,22 @@ api Rest {
 ```
 When the frontend makes a DELETE request with the identifier (the first field of your slice), the C++ server locates the corresponding line in the `.jsonl` file, safely removes it, and rewrites the persistent store atomically. Additionally, if a table renders that slice in your view, an interactive **Delete** button column will automatically be appended.
 
+### 3. Query Parameters, Filtering, and Pagination
+Hexagen automatically exposes dynamic query filtering and pagination on all auto-generated slice GET endpoints (`/api/<SliceName>`). You can send query strings to perform safe, parameterized queries:
+
+*   **Field Filtering:** Filter results by matching slice fields.
+    ```bash
+    curl -i http://localhost:8080/api/Plato?categoria_id=3&disponible=true
+    ```
+*   **Pagination:** Limit and offset the results using `_limit` and `_offset` query parameters.
+    ```bash
+    curl -i http://localhost:8080/api/Plato?_limit=10&_offset=20
+    ```
+
+This works out of the box across all supported engines (JSONL, SQLite, and PostgreSQL/MySQL), implementing optimized runtime checks and parameterized queries to prevent SQL injections.
+
 ---
+
 
 ## 🛠️ Manual Compilation (Framework Contributors Only)
 If you want to modify the Hexagen compiler or compile it yourself instead of using the quick installation scripts, make sure you have Go installed and run:

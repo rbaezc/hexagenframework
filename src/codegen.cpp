@@ -118,18 +118,50 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     ss << "    }\n\n";
 
     // getAllAsJSON_JSONL
-    ss << "    static std::string getAllAsJSON_JSONL() {\n";
+    ss << "    static std::string getAllAsJSON_JSONL(const std::string& req = \"\") {\n";
     ss << "        std::ifstream infile(\"db_" << slice->name << ".jsonl\");\n";
     ss << "        std::stringstream ss;\n";
     ss << "        ss << \"[\";\n";
+    ss << "        int limitVal = -1;\n";
+    ss << "        int offsetVal = 0;\n";
+    ss << "        std::string limitStr = getQueryParam(req, \"_limit\");\n";
+    ss << "        if (!limitStr.empty()) {\n";
+    ss << "            limitVal = safeStoi(limitStr, -1);\n";
+    ss << "        }\n";
+    ss << "        std::string offsetStr = getQueryParam(req, \"_offset\");\n";
+    ss << "        if (!offsetStr.empty()) {\n";
+    ss << "            offsetVal = safeStoi(offsetStr, 0);\n";
+    ss << "        }\n";
+    for (const auto& field : slice->fields) {
+        ss << "        std::string filter_" << field->name << " = getQueryParam(req, \"" << field->name << "\");\n";
+    }
+    ss << "        int matchedCount = 0;\n";
+    ss << "        int skipped = 0;\n";
     ss << "        if (infile.is_open()) {\n";
     ss << "            std::string line;\n";
     ss << "            bool first = true;\n";
     ss << "            while (std::getline(infile, line)) {\n";
     ss << "                if (line.empty()) continue;\n";
+    ss << "                bool matches = true;\n";
+    for (const auto& field : slice->fields) {
+        ss << "                if (!filter_" << field->name << ".empty()) {\n";
+        ss << "                    if (getJSONVal(line, \"" << field->name << "\") != filter_" << field->name << ") {\n";
+        ss << "                        matches = false;\n";
+        ss << "                    }\n";
+        ss << "                }\n";
+    }
+    ss << "                if (!matches) continue;\n";
+    ss << "                if (skipped < offsetVal) {\n";
+    ss << "                    skipped++;\n";
+    ss << "                    continue;\n";
+    ss << "                }\n";
+    ss << "                if (limitVal >= 0 && matchedCount >= limitVal) {\n";
+    ss << "                    break;\n";
+    ss << "                }\n";
     ss << "                if (!first) ss << \",\";\n";
     ss << "                ss << line;\n";
     ss << "                first = false;\n";
+    ss << "                matchedCount++;\n";
     ss << "            }\n";
     ss << "            infile.close();\n";
     ss << "        }\n";
@@ -283,15 +315,55 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     // -------------------------------------------------------------
     // getAllAsJSON() Method
     // -------------------------------------------------------------
-    ss << "    static std::string getAllAsJSON() {\n";
+    ss << "    static std::string getAllAsJSON(const std::string& req = \"\") {\n";
     if (dbType == "sqlite") {
         ss << "        sqlite3* db = getSQLiteConn();\n";
-        ss << "        if (!db) return getAllAsJSON_JSONL();\n";
-        ss << "        std::string query = \"SELECT * FROM \\\"" << slice->name << "\\\";\";\n";
+        ss << "        if (!db) return getAllAsJSON_JSONL(req);\n";
+        ss << "        std::vector<std::pair<std::string, std::string>> filters;\n";
+        for (const auto& field : slice->fields) {
+            ss << "        {\n";
+            ss << "            std::string val = getQueryParam(req, \"" << field->name << "\");\n";
+            ss << "            if (!val.empty()) {\n";
+            if (field->type == DataType::BOOL) {
+                ss << "                if (val == \"true\") val = \"1\";\n";
+                ss << "                else if (val == \"false\") val = \"0\";\n";
+            }
+            ss << "                filters.push_back({\"" << field->name << "\", val});\n";
+            ss << "            }\n";
+            ss << "        }\n";
+        }
+        ss << "        std::string query = \"SELECT * FROM \\\"" << slice->name << "\\\"\";\n";
+        ss << "        if (!filters.empty()) {\n";
+        ss << "            query += \" WHERE \";\n";
+        ss << "            for (size_t i = 0; i < filters.size(); ++i) {\n";
+        ss << "                query += \"\\\"\" + filters[i].first + \"\\\" = ?\";\n";
+        ss << "                if (i + 1 < filters.size()) {\n";
+        ss << "                    query += \" AND \";\n";
+        ss << "                }\n";
+        ss << "            }\n";
+        ss << "        }\n";
+        ss << "        std::string limitStr = getQueryParam(req, \"_limit\");\n";
+        ss << "        std::string offsetStr = getQueryParam(req, \"_offset\");\n";
+        ss << "        if (!limitStr.empty()) {\n";
+        ss << "            query += \" LIMIT ?\";\n";
+        ss << "        }\n";
+        ss << "        if (!offsetStr.empty()) {\n";
+        ss << "            query += \" OFFSET ?\";\n";
+        ss << "        }\n";
         ss << "        sqlite3_stmt* stmt;\n";
         ss << "        std::stringstream ss;\n";
         ss << "        ss << \"[\";\n";
         ss << "        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {\n";
+        ss << "            int bindIdx = 1;\n";
+        ss << "            for (const auto& f : filters) {\n";
+        ss << "                sqlite3_bind_text(stmt, bindIdx++, f.second.c_str(), -1, SQLITE_TRANSIENT);\n";
+        ss << "            }\n";
+        ss << "            if (!limitStr.empty()) {\n";
+        ss << "                sqlite3_bind_int(stmt, bindIdx++, safeStoi(limitStr));\n";
+        ss << "            }\n";
+        ss << "            if (!offsetStr.empty()) {\n";
+        ss << "                sqlite3_bind_int(stmt, bindIdx++, safeStoi(offsetStr));\n";
+        ss << "            }\n";
         ss << "            bool first = true;\n";
         ss << "            while (sqlite3_step(stmt) == SQLITE_ROW) {\n";
         ss << "                if (!first) ss << \",\";\n";
@@ -323,13 +395,49 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "        return ss.str();\n";
     } else if (dbType == "postgres" || dbType == "postgresql") {
         ss << "        PGconn* conn = getPGConn();\n";
-        ss << "        if (!conn) return getAllAsJSON_JSONL();\n";
-        ss << "        std::string query = \"SELECT * FROM \\\"" << slice->name << "\\\";\";\n";
-        ss << "        PGresult* res = PQexec(conn, query.c_str());\n";
+        ss << "        if (!conn) return getAllAsJSON_JSONL(req);\n";
+        ss << "        std::vector<std::string> paramValues;\n";
+        ss << "        std::string query = \"SELECT * FROM \\\"" << slice->name << "\\\"\";\n";
+        for (const auto& field : slice->fields) {
+            ss << "        {\n";
+            ss << "            std::string val = getQueryParam(req, \"" << field->name << "\");\n";
+            ss << "            if (!val.empty()) {\n";
+            ss << "                paramValues.push_back(val);\n";
+            ss << "                if (query.find(\" WHERE \") == std::string::npos) {\n";
+            ss << "                    query += \" WHERE \";\n";
+            ss << "                } else {\n";
+            ss << "                    query += \" AND \";\n";
+            ss << "                }\n";
+            ss << "                query += \"\\\"" << field->name << "\\\" = $\" + std::to_string(paramValues.size());\n";
+            if (field->type == DataType::INT || field->type == DataType::RELATION) {
+                ss << "                query += \"::int\";\n";
+            } else if (field->type == DataType::FLOAT) {
+                ss << "                query += \"::float\";\n";
+            } else if (field->type == DataType::BOOL) {
+                ss << "                query += \"::boolean\";\n";
+            }
+            ss << "            }\n";
+            ss << "        }\n";
+        }
+        ss << "        std::string limitStr = getQueryParam(req, \"_limit\");\n";
+        ss << "        std::string offsetStr = getQueryParam(req, \"_offset\");\n";
+        ss << "        if (!limitStr.empty()) {\n";
+        ss << "            paramValues.push_back(limitStr);\n";
+        ss << "            query += \" LIMIT $\" + std::to_string(paramValues.size()) + \"::int\";\n";
+        ss << "        }\n";
+        ss << "        if (!offsetStr.empty()) {\n";
+        ss << "            paramValues.push_back(offsetStr);\n";
+        ss << "            query += \" OFFSET $\" + std::to_string(paramValues.size()) + \"::int\";\n";
+        ss << "        }\n";
+        ss << "        std::vector<const char*> c_params;\n";
+        ss << "        for (const auto& p : paramValues) {\n";
+        ss << "            c_params.push_back(p.c_str());\n";
+        ss << "        }\n";
+        ss << "        PGresult* res = PQexecParams(conn, query.c_str(), c_params.size(), NULL, c_params.empty() ? NULL : c_params.data(), NULL, NULL, 0);\n";
         ss << "        if (PQresultStatus(res) != PGRES_TUPLES_OK) {\n";
         ss << "            PQclear(res);\n";
         ss << "            PQfinish(conn);\n";
-        ss << "            return getAllAsJSON_JSONL();\n";
+        ss << "            return getAllAsJSON_JSONL(req);\n";
         ss << "        }\n";
         ss << "        int rows = PQntuples(res);\n";
         ss << "        std::stringstream ss;\n";
@@ -367,8 +475,40 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "        return ss.str();\n";
     } else if (dbType == "mysql") {
         ss << "        MYSQL* conn = getMySQLConn();\n";
-        ss << "        if (!conn) return getAllAsJSON_JSONL();\n";
-        ss << "        std::string query = \"SELECT * FROM `" << slice->name << "`;\";\n";
+        ss << "        if (!conn) return getAllAsJSON_JSONL(req);\n";
+        ss << "        std::string query = \"SELECT * FROM `" << slice->name << "`\";\n";
+        for (const auto& field : slice->fields) {
+            ss << "        {\n";
+            ss << "            std::string val = getQueryParam(req, \"" << field->name << "\");\n";
+            ss << "            if (!val.empty()) {\n";
+            ss << "                if (query.find(\" WHERE \") == std::string::npos) {\n";
+            ss << "                    query += \" WHERE \";\n";
+            ss << "                } else {\n";
+            ss << "                    query += \" AND \";\n";
+            ss << "                }\n";
+            if (field->type == DataType::INT || field->type == DataType::RELATION) {
+                ss << "                query += \"`" << field->name << "` = \" + std::to_string(safeStoi(val));\n";
+            } else if (field->type == DataType::BOOL) {
+                ss << "                query += \"`" << field->name << "` = \" + std::to_string(val == \"true\" || val == \"1\" ? 1 : 0);\n";
+            } else if (field->type == DataType::FLOAT) {
+                ss << "                query += \"`" << field->name << "` = \" + std::to_string(safeStod(val));\n";
+            } else {
+                ss << "                char* escaped = new char[val.length() * 2 + 1];\n";
+                ss << "                mysql_real_escape_string(conn, escaped, val.c_str(), val.length());\n";
+                ss << "                query += \"`" << field->name << "` = '\" + std::string(escaped) + \"'\";\n";
+                ss << "                delete[] escaped;\n";
+            }
+            ss << "            }\n";
+            ss << "        }\n";
+        }
+        ss << "        std::string limitStr = getQueryParam(req, \"_limit\");\n";
+        ss << "        std::string offsetStr = getQueryParam(req, \"_offset\");\n";
+        ss << "        if (!limitStr.empty()) {\n";
+        ss << "            query += \" LIMIT \" + std::to_string(safeStoi(limitStr));\n";
+        ss << "        }\n";
+        ss << "        if (!offsetStr.empty()) {\n";
+        ss << "            query += \" OFFSET \" + std::to_string(safeStoi(offsetStr));\n";
+        ss << "        }\n";
         ss << "        std::stringstream ss;\n";
         ss << "        ss << \"[\";\n";
         ss << "        if (mysql_query(conn, query.c_str()) == 0) {\n";
@@ -415,7 +555,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "        mysql_close(conn);\n";
         ss << "        return ss.str();\n";
     } else {
-        ss << "        return getAllAsJSON_JSONL();\n";
+        ss << "        return getAllAsJSON_JSONL(req);\n";
     }
     ss << "    }\n\n";
 
@@ -791,6 +931,36 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "    return json.substr(valStart, valEnd - valStart);\n"
        << "}\n\n";
 
+    ss << "// Simple query parameter extraction helper\n"
+       << "std::string getQueryParam(const std::string& req, const std::string& key) {\n"
+       << "    size_t firstLineEnd = req.find(\"\\n\");\n"
+       << "    if (firstLineEnd == std::string::npos) return \"\";\n"
+       << "    std::string reqLine = req.substr(0, firstLineEnd);\n"
+       << "    size_t qPos = reqLine.find('?');\n"
+       << "    if (qPos == std::string::npos) return \"\";\n"
+       << "    size_t spacePos = reqLine.find(' ', qPos);\n"
+       << "    if (spacePos == std::string::npos) spacePos = reqLine.length();\n"
+       << "    std::string queryString = reqLine.substr(qPos + 1, spacePos - qPos - 1);\n"
+       << "    std::string target = key + \"=\";\n"
+       << "    size_t start = 0;\n"
+       << "    while (true) {\n"
+       << "        size_t p = queryString.find(target, start);\n"
+       << "        if (p == std::string::npos) return \"\";\n"
+       << "        if (p == 0 || queryString[p - 1] == '&') {\n"
+       << "            size_t valStart = p + target.length();\n"
+       << "            size_t valEnd = queryString.find('&', valStart);\n"
+       << "            if (valEnd == std::string::npos) {\n"
+       << "                return queryString.substr(valStart);\n"
+       << "            } else {\n"
+       << "                return queryString.substr(valStart, valEnd - valStart);\n"
+       << "            }\n"
+       << "        }\n"
+       << "        start = p + 1;\n"
+       << "    }\n"
+       << "    return \"\";\n"
+       << "}\n\n";
+
+
     // Global environment loader and helpers
     ss << "// Global environment loader and helpers\n"
        << "const char* getEnvOr(const char* key, const char* defaultVal) {\n"
@@ -1083,7 +1253,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             } else {
                 ss << "            else if (req.find(\"GET /api/" << slice->name << "\") != std::string::npos) {\n";
             }
-            ss << "                std::string json = " << slice->name << "::getAllAsJSON();\n";
+            ss << "                std::string json = " << slice->name << "::getAllAsJSON(req);\n";
             ss << "                std::stringstream resp;\n";
             ss << "                resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
             ss << "                     << \"Content-Type: application/json\\r\\n\"\n";
