@@ -1,55 +1,76 @@
 # ⚡ Hexagen Framework (hf)
 
-Hexagen es un meta-compilador y framework de desarrollo full-stack unificado escrito en C++17. Te permite declarar tu lógica de negocio (`slice`), tu interfaz de usuario (`view`) y tus endpoints de red (`api`) en un único archivo de código fuente `.hx` y compilarlo en un **único binario ejecutable de C++ autónomo con persistencia de base de datos local y servidor HTTP integrado**.
+**English Version** | [Versión en Español](README.es.md)
+
+Hexagen is a unified full-stack development framework and meta-compiler written in C++17. It allows you to declare your business logic (`slice`), your user interface (`view`), and your network endpoints (`api`) in a single `.hx` source file and compile them into a **single, standalone C++ executable binary with local database persistence and an integrated HTTP server**.
 
 ---
 
-## 🏗️ Arquitectura y Pilares del Framework
+## 🚀 Quick Installation (Out of the Box)
 
-Hexagen automatiza todo el pipeline de desarrollo web, ruteo y bases de datos a través de 4 pilares:
+You can install Hexagen immediately without needing to compile it manually. Run the command corresponding to your operating system in your terminal:
 
-1.  **🗄️ Persistencia de Datos Automática (Pillar 1):** Cada `slice` autogenera métodos nativos en C++ para leer y escribir de forma atómica y concurrente en una base de datos local estructurada (`db_<Slice>.jsonl`).
-2.  **🛡️ Capa de Seguridad Nivel API (Pillar 3):** Rutas decoradas con la palabra clave `secure` bloquean peticiones HTTP externas que no incluyan un token de acceso válido en su cabecera (`Authorization: Bearer <token>`), respondiendo automáticamente `HTTP 401 Unauthorized`.
-3.  **⚡ Dev Watcher Loop & Hot Compiling (Pillar 4):** El CLI vigila cambios en tus archivos `.hx`, transpila el código, compila el servidor en segundo plano y lo reinicia automáticamente en microsegundos.
-4.  **📊 Componentes de UI Reactivos (Pillar 5):** Soporte nativo para tablas dinámicas que leen directamente de las APIs internas en C++ y se actualizan de forma reactiva al registrar datos a través de formularios.
+### 🐧 Linux & 🍎 macOS
+```bash
+curl -fsSL https://raw.githubusercontent.com/rbaezc/hexagenframework/main/install.sh | bash
+```
+
+### 🪟 Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/rbaezc/hexagenframework/main/install.ps1 | iex
+```
+
+*Once installed, restart your terminal and run `hf --help` to verify the installation.*
 
 ---
 
-## 📂 Estructura de Directorios
+## 🏗️ Architecture and Framework Pillars
+
+Hexagen automates the entire web development pipeline, routing, and database layer through its key pillars:
+
+1. **🗄️ Automatic Data Persistence (Pillar 1):** Each `slice` auto-generates native C++ methods to read and write atomically and concurrently in a structured local database file (`db_<Slice>.jsonl`).
+2. **🛡️ API-Level Security Layer (Pillar 3):** Routes decorated with the `secure` keyword block external HTTP requests that do not include a valid access token in their header (`Authorization: Bearer <token>`), automatically responding with `HTTP 401 Unauthorized`.
+3. **⚡ Dev Watcher Loop & Hot Compiling (Pillar 4):** The CLI watches for changes in your `.hx` files, transpiles the code, compiles the server in the background, and restarts it automatically in microseconds.
+4. **📊 Reactive UI Components (Pillar 5):** Native support for dynamic tables that read directly from internal C++ APIs and update reactively when data is registered through forms.
+
+---
+
+## 📂 Repository Directory Structure
+
+If you clone the framework repository to contribute or understand its inner workings, this is the directory structure:
 
 ```text
 hexagen_framework/
-├── build/                # Objetos compilados temporales
-├── src/                  # Código fuente del compilador hf
-│   ├── token.hpp         # Definición de tokens del lenguaje
-│   ├── lexer.hpp/cpp     # Analizador Léxico a mano
-│   ├── ast.hpp           # Estructuras del Árbol de Sintaxis Abstracta
-│   ├── parser.hpp/cpp    # Parser descendente recursivo (precedencias y flujos)
-│   ├── codegen.hpp/cpp   # Transpilador C++ / Generador HTTP & HTML
-│   └── main.cpp          # Controlador de CLI (dev, compile, run, ast)
-├── Makefile              # Compilación del compilador hf
-├── CMakeLists.txt        # Configuración de CMake
-├── demo.hx               # Código de prueba general-purpose (Inventario)
-└── hf                    # El ejecutable binario compilado de Hexagen
+├── build/                # Temporary compiled objects
+├── src/                  # Source code for the hf compiler
+│   ├── token.hpp         # Definition of language tokens
+│   ├── lexer.hpp/cpp     # Hand-written Lexical Analyzer
+│   ├── ast.hpp           # Abstract Syntax Tree structures
+│   ├── parser.hpp/cpp    # Recursive descent parser
+│   ├── codegen.hpp/cpp   # C++ Transpiler / HTTP & HTML generator
+│   └── main.cpp          # CLI Controller (dev, compile, run, ast)
+├── Makefile              # Manual compilation of the hf compiler
+├── CMakeLists.txt        # CMake configuration
+├── demo.hx               # General-purpose test code (Inventory)
+├── install.sh            # Unix installation script
+└── install.ps1           # Windows installation script
 ```
 
 ---
 
-## 🚀 Guía de Inicio Paso a Paso
+## 🚀 Step-by-Step Getting Started Guide
 
-Sigue estos pasos en tu consola de Fedora para compilar, desarrollar y desplegar una aplicación:
-
-### Paso 1: Compilar el Compilador de Hexagen
-Para construir el binario `./hf` en tu máquina, corre:
+### Step 1: Create Your Project (`hf new`)
+You can initialize a project workspace ready to code with a single command:
 ```bash
-make clean && make
+hf new my_project
 ```
-*Esto compilará los fuentes de `src/` y generará el ejecutable de CLI `./hf`.*
+This will create a folder named `my_project` containing a base `app.hx` file and a configured `Makefile`.
 
 ---
 
-### Paso 2: Crear tu Código Fuente (`app.hx`)
-Escribe tu aplicación definiendo tu modelo, pantalla y enrutamiento. Aquí tienes el ejemplo general de inventarios ([demo.hx](file:///home/meliodas/Projects/VortexSolutions/Vortex%20Libraries/hexagen_framework/demo.hx)):
+### Step 2: Write Your Source Code (`app.hx`)
+Write your application by defining your model, screen, and routing. Here is the inventory example ([demo.hx](demo.hx)):
 ```prolog
 slice Inventario {
     field item: string
@@ -76,77 +97,78 @@ api Rest {
 
 ---
 
-### Paso 3: Correr en Modo de Desarrollo (Hot Reload)
-Para trabajar de manera interactiva con actualizaciones automáticas en segundo plano, corre:
+### Step 3: Run in Development Mode (Hot Reload)
+To work interactively with automatic updates running in the background, run:
 ```bash
-./hf dev demo.hx
+hf dev demo.hx
 ```
-*   Esto compilará y levantará la aplicación en **[http://localhost:8080](http://localhost:8080)**.
-*   Si modificas y guardas `demo.hx` (por ejemplo, cambiando el título de la vista o añadiendo campos), **`hf` recompilará el servidor de C++ en caliente al instante**.
+* This compiles and serves the application at **[http://localhost:8080](http://localhost:8080)**.
+* If you modify and save `demo.hx`, **`hf` will hot-recompile the C++ server instantly**.
 
 ---
 
-### Paso 4: Compilar a Producción (Binario Standalone)
-Cuando tu aplicación esté lista, puedes empaquetarla en un ejecutable monolítico ultra-rápido:
+### Step 4: Compile for Production (Standalone Binary)
+When your application is ready, you can package it into an ultra-fast, monolithic executable:
 ```bash
-./hf compile demo.hx -o mi_servidor
+hf compile demo.hx -o my_server
 ```
-Esto genera el ejecutable `mi_servidor`. Para correrlo en cualquier máquina de producción, basta con ejecutar:
+This generates the `my_server` executable. To run it on any production machine, simply execute:
 ```bash
-./mi_servidor
+./my_server
 ```
-*(No requiere dependencias externas, ni bases de datos, ni servidores web adicionales).*
+*(Requires no external dependencies, no Node.js, no external relational databases, and no additional web servers).*
 
 ---
 
-### Paso 5: Probar la Seguridad del API (Pillar 3)
-Puedes probar las restricciones de seguridad del endpoint `/process` enviando una petición HTTP manual:
+### Step 5: Test API Security (Pillar 3)
+You can test the security restrictions of the `/process` endpoint by sending a manual HTTP request:
 
-*   **Petición No Autorizada (Bloqueada):**
+*   **Unauthorized Request (Blocked):**
     ```bash
     curl -i -X POST http://localhost:8080/process -d '{"item":"Mouse", "cantidad": 5}'
-    # Retorna: HTTP/1.1 401 Unauthorized
+    # Returns: HTTP/1.1 401 Unauthorized
     ```
-*   **Petición Autorizada (Exitosa):**
+*   **Authorized Request (Successful):**
     ```bash
     curl -i -X POST http://localhost:8080/process \
          -H "Authorization: Bearer hexagen_token_123" \
          -d '{"item":"Mouse", "cantidad": 5}'
-    # Retorna: HTTP/1.1 200 OK y ejecuta la lógica nativa en C++
+    # Returns: HTTP/1.1 200 OK and executes native C++ logic
     ```
 
 ---
 
-## 🛠️ Funcionalidades Avanzadas
+## 🛠️ Advanced Features
 
-### 1. Scaffold de Proyectos (`hf new`)
-Puedes inicializar un espacio de trabajo listo para programar con un solo comando:
-```bash
-./hf new mi_proyecto
-```
-Esto creará una carpeta llamada `mi_proyecto` que contiene un archivo `app.hx` base y un `Makefile` configurado con atajos para compilar (`make build`), ejecutar (`make run`), o desarrollar con recarga en vivo (`make dev`).
-
-### 2. Multi-vista y Redirección Integrada
-Hexagen admite múltiples bloques `view` en tu código fuente. Para navegar entre ellos de forma nativa en la UI, define un botón cuyo destino (`->`) sea el nombre de la otra vista:
+### 1. Multi-view and Built-in Redirection
+Hexagen supports multiple `view` blocks in your source code. To navigate between them natively in the UI, define a button whose target (`->`) is the name of the other view:
 ```prolog
 view Home {
-    title "Inicio"
-    button "Ver Panel" -> Dashboard
+    title "Home"
+    button "View Dashboard" -> Dashboard
 }
 
 view Dashboard {
-    title "Panel de Control"
-    button "Volver" -> Home
+    title "Control Dashboard"
+    button "Go Back" -> Home
 }
 ```
-El transpilador generará redirecciones JavaScript de alto rendimiento usando `window.location.href = '/<vista>';` para una navegación fluida.
+The transpiler will generate high-performance JavaScript redirects using `window.location.href = '/<view>';` for fluid navigation.
 
-### 3. Operaciones de Eliminación CRUD (DELETE)
-El framework soporta rutas HTTP de tipo `DELETE` para borrar registros atómicamente de tu base de datos `.jsonl`:
+### 2. CRUD Delete Operations (DELETE)
+The framework supports `DELETE` HTTP routes to atomically erase records from your `.jsonl` database:
 ```prolog
 api Rest {
     secure route "/eliminar" DELETE -> Inventario.Eliminar
 }
 ```
-Cuando el frontend realice una solicitud DELETE con el identificador (el primer campo de tu slice), el servidor C++ localizará la línea correspondiente en el archivo `.jsonl`, la eliminará de forma segura y reescribirá la persistencia de forma atómica. Además, si hay una tabla renderizando dicho slice en tu vista, se añadirá automáticamente una columna con un botón de **Eliminar** interactivo.
+When the frontend makes a DELETE request with the identifier (the first field of your slice), the C++ server locates the corresponding line in the `.jsonl` file, safely removes it, and rewrites the persistent store atomically. Additionally, if a table renders that slice in your view, an interactive **Delete** button column will automatically be appended.
 
+---
+
+## 🛠️ Manual Compilation (Framework Contributors Only)
+If you want to modify the Hexagen compiler or compile it yourself instead of using the quick installation scripts, run:
+```bash
+make clean && make
+```
+This will compile the source code in `src/` into the local `./hf` executable using the repository's `Makefile`.
