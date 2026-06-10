@@ -35,6 +35,41 @@ Hexagen automatiza todo el pipeline de desarrollo web, ruteo y bases de datos a 
 
 ---
 
+## 🗄️ Configuración de Base de Datos
+
+Hexagen admite configurar tu motor de base de datos de forma global usando el bloque `config` al inicio de tu archivo `.hx`.
+
+### Motores Soportados
+*   `jsonl` (Por defecto): Archivo plano local JSON Lines. Ideal para portabilidad sin dependencias.
+*   `sqlite` (Planificado): Base de datos relacional integrada en el binario.
+*   `postgres` / `mysql` (Planificado): Conectores para bases de datos relacionales en red.
+
+### Cómo Configurar
+1.  **Define el motor en tu archivo `.hx`:**
+    ```prolog
+    config {
+        database: postgres
+    }
+    
+    slice Tareas {
+        field desc: string
+        field completada: bool
+    }
+    ```
+2.  **Guarda tus credenciales de forma segura en un archivo `.env`:**
+    Los accesos a la base de datos (host, usuario, contraseña, puerto, etc.) se cargan en tiempo de ejecución desde variables de entorno o desde un archivo local `.env` (el cual debe ser agregado a tu `.gitignore`):
+    ```ini
+    DB_HOST=localhost
+    DB_PORT=5432
+    DB_USER=mi_usuario
+    DB_PASS=mi_contraseña_segura
+    DB_NAME=vortex_db
+    ```
+3.  **Fallback Local en Desarrollo:**
+    Si el servidor compilado no encuentra credenciales de conexión en el sistema o archivo `.env`, retornará automáticamente a almacenamiento local basado en JSONL/SQLite para mantener el flujo de desarrollo ágil y sin dependencias externas.
+
+---
+
 ## 📂 Estructura de Directorios del Repositorio
 
 Si clonas el repositorio del framework para contribuir o entender su funcionamiento interno, esta es la estructura:

@@ -35,6 +35,41 @@ Hexagen automates the entire web development pipeline, routing, and database lay
 
 ---
 
+## 🗄️ Database Configuration
+
+Hexagen supports configuring your database engine globally using the `config` block at the beginning of your `.hx` file. 
+
+### Supported Engines
+*   `jsonl` (Default): Local plain-text JSON Lines file. Great for zero-dependency portability.
+*   `sqlite` (Planned): Embedded relational database.
+*   `postgres` / `mysql` (Planned): Remote database engines.
+
+### How to Configure
+1.  **Define the Engine in your `.hx` file:**
+    ```prolog
+    config {
+        database: postgres
+    }
+    
+    slice Tareas {
+        field desc: string
+        field completada: bool
+    }
+    ```
+2.  **Store Credentials Securely in a `.env` file:**
+    Database credentials (hosts, usernames, passwords) are loaded at runtime from environment variables or a local `.env` file (which should be added to `.gitignore`):
+    ```ini
+    DB_HOST=localhost
+    DB_PORT=5432
+    DB_USER=my_user
+    DB_PASS=my_password
+    DB_NAME=vortex_db
+    ```
+3.  **Local Dev Fallback:**
+    If no database credentials are found in the system, the compiled server automatically falls back to local JSONL/SQLite storage to keep development frictionless and out-of-the-box.
+
+---
+
 ## 📂 Repository Directory Structure
 
 If you clone the framework repository to contribute or understand its inner workings, this is the directory structure:
