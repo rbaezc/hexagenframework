@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <thread>
 #include <chrono>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
@@ -33,6 +34,47 @@ std::string readFile(const std::string& filepath) {
     std::stringstream buffer;
     buffer << file.rdbuf();
     return buffer.str();
+}
+
+std::string readInputSource(const std::string& filepath) {
+    if (fs::is_directory(filepath)) {
+        std::stringstream ss;
+        std::vector<fs::path> paths;
+        for (const auto& entry : fs::directory_iterator(filepath)) {
+            if (entry.is_regular_file() && entry.path().extension() == ".hx") {
+                paths.push_back(entry.path());
+            }
+        }
+        std::sort(paths.begin(), paths.end());
+        for (const auto& p : paths) {
+            ss << "\n// File: " << p.filename().string() << "\n";
+            std::ifstream file(p);
+            if (file.is_open()) {
+                ss << file.rdbuf() << "\n";
+            }
+        }
+        return ss.str();
+    }
+    return readFile(filepath);
+}
+
+uint64_t getInputState(const std::string& filepath) {
+    if (!fs::exists(filepath)) return 0;
+    if (fs::is_directory(filepath)) {
+        uint64_t total = 0;
+        size_t count = 0;
+        for (const auto& entry : fs::directory_iterator(filepath)) {
+            if (entry.is_regular_file() && entry.path().extension() == ".hx") {
+                auto mt = fs::last_write_time(entry.path());
+                total += std::chrono::duration_cast<std::chrono::milliseconds>(mt.time_since_epoch()).count();
+                count++;
+            }
+        }
+        return total + count * 1000000ULL;
+    } else {
+        auto mt = fs::last_write_time(filepath);
+        return std::chrono::duration_cast<std::chrono::milliseconds>(mt.time_since_epoch()).count();
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -162,7 +204,7 @@ int main(int argc, char* argv[]) {
 
             auto compileAndReload = [&]() {
                 try {
-                    std::string src = readFile(inputFile);
+                    std::string src = readInputSource(inputFile);
                     Lexer lexer(src);
                     auto tokens = lexer.tokenize();
 
@@ -192,14 +234,14 @@ int main(int argc, char* argv[]) {
             compileAndReload();
 
             // Monitor changes
-            auto lastMod = fs::last_write_time(inputFile);
+            auto lastState = getInputState(inputFile);
             while (true) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 try {
                     if (fs::exists(inputFile)) {
-                        auto currentMod = fs::last_write_time(inputFile);
-                        if (currentMod != lastMod) {
-                            lastMod = currentMod;
+                        auto currentState = getInputState(inputFile);
+                        if (currentState != lastState) {
+                            lastState = currentState;
                             std::cout << "⚡ [Hexagen Dev] Change detected in " << inputFile << "! Reloading..." << std::endl;
                             compileAndReload();
                         }
@@ -210,7 +252,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Standard commands
-        std::string source = readFile(inputFile);
+        std::string source = readInputSource(inputFile);
         
         Lexer lexer(source);
         auto tokens = lexer.tokenize();
