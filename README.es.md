@@ -41,19 +41,21 @@ Si clonas el repositorio del framework para contribuir o entender su funcionamie
 
 ```text
 hexagen_framework/
-├── build/                # Objetos compilados temporales
-├── src/                  # Código fuente del compilador hf
+├── build/                # Objetos compilados temporales de C++
+├── cli/                  # Código fuente del wrapper de CLI en Go
+│   └── main.go           # CLI Orquestadora (vigila archivos, gestiona procesos)
+├── src/                  # Código fuente del núcleo del compilador en C++
 │   ├── token.hpp         # Definición de tokens del lenguaje
 │   ├── lexer.hpp/cpp     # Analizador Léxico
 │   ├── ast.hpp           # Estructuras del Árbol de Sintaxis Abstracta
 │   ├── parser.hpp/cpp    # Parser descendente recursivo
 │   ├── codegen.hpp/cpp   # Transpilador C++ / Generador HTTP & HTML
-│   └── main.cpp          # Controlador de CLI (dev, compile, run, ast)
-├── Makefile              # Compilación manual del compilador hf
+│   └── main.cpp          # Punto de entrada de C++ core (crea hf_core)
+├── Makefile              # Script de compilación híbrido (Go + C++)
 ├── CMakeLists.txt        # Configuración de CMake
 ├── demo.hx               # Código de prueba general-purpose (Inventario)
-├── install.sh            # Script de instalación para Unix
-└── install.ps1           # Script de instalación para Windows
+├── install.sh            # Script de instalación para Unix (instala hf y hf_core)
+└── install.ps1           # Script de instalación para Windows (instala hf.exe y hf_core.exe)
 ```
 
 ---
@@ -167,8 +169,10 @@ Cuando el frontend realice una solicitud DELETE con el identificador (el primer 
 ---
 
 ## 🛠️ Compilación Manual (Solo para Desarrolladores del Framework)
-Si deseas realizar modificaciones en el compilador de Hexagen o compilarlo tú mismo en lugar de usar los scripts de instalación rápida, corre:
+Si deseas realizar modificaciones en el compilador de Hexagen o compilarlo tú mismo en lugar de usar los scripts de instalación rápida, asegúrate de tener Go instalado y corre:
 ```bash
 make clean && make
 ```
-Esto utilizará el `Makefile` del repositorio para compilar el código fuente de `src/` en el ejecutable local `./hf`.
+Esto compilará:
+1. El núcleo del parser C++ en el binario local `./hf_core`.
+2. La CLI orquestadora de Go en el binario local `./hf` (que envuelve a `hf_core`).

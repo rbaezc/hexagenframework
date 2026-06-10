@@ -41,19 +41,21 @@ If you clone the framework repository to contribute or understand its inner work
 
 ```text
 hexagen_framework/
-├── build/                # Temporary compiled objects
-├── src/                  # Source code for the hf compiler
+├── build/                # Temporary compiled C++ objects
+├── cli/                  # Go CLI wrapper source code
+│   └── main.go           # Orchestrator CLI (watches files, manages processes)
+├── src/                  # Source code for the hf C++ parser core
 │   ├── token.hpp         # Definition of language tokens
 │   ├── lexer.hpp/cpp     # Hand-written Lexical Analyzer
 │   ├── ast.hpp           # Abstract Syntax Tree structures
 │   ├── parser.hpp/cpp    # Recursive descent parser
 │   ├── codegen.hpp/cpp   # C++ Transpiler / HTTP & HTML generator
-│   └── main.cpp          # CLI Controller (dev, compile, run, ast)
-├── Makefile              # Manual compilation of the hf compiler
+│   └── main.cpp          # C++ core CLI entry point (creates hf_core)
+├── Makefile              # Hybrid compilation script (Go + C++)
 ├── CMakeLists.txt        # CMake configuration
 ├── demo.hx               # General-purpose test code (Inventory)
-├── install.sh            # Unix installation script
-└── install.ps1           # Windows installation script
+├── install.sh            # Unix installation script (installs hf and hf_core)
+└── install.ps1           # Windows installation script (installs hf.exe and hf_core.exe)
 ```
 
 ---
@@ -167,8 +169,10 @@ When the frontend makes a DELETE request with the identifier (the first field of
 ---
 
 ## 🛠️ Manual Compilation (Framework Contributors Only)
-If you want to modify the Hexagen compiler or compile it yourself instead of using the quick installation scripts, run:
+If you want to modify the Hexagen compiler or compile it yourself instead of using the quick installation scripts, make sure you have Go installed and run:
 ```bash
 make clean && make
 ```
-This will compile the source code in `src/` into the local `./hf` executable using the repository's `Makefile`.
+This will compile:
+1. The C++ parser core into the local `./hf_core` binary.
+2. The Go CLI orchestrator into the local `./hf` binary wrapper.
