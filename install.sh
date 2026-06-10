@@ -36,12 +36,16 @@ case "$ARCH" in
     ;;
 esac
 
-BINARY_NAME="hf"
-DOWNLOAD_URL="https://github.com/$REPO/releases/$VERSION/download/${BINARY_NAME}_${PLATFORM}_${BINARY_ARCH}"
+# Download target variables
+CLI_NAME="hf"
+CORE_NAME="hf_core"
 
-# Fallback to latest release details if specific version download fails
+CLI_URL="https://github.com/$REPO/releases/$VERSION/download/${CLI_NAME}_${PLATFORM}_${BINARY_ARCH}"
+CORE_URL="https://github.com/$REPO/releases/$VERSION/download/${CORE_NAME}_${PLATFORM}_${BINARY_ARCH}"
+
 if [ "$VERSION" = "latest" ]; then
-  DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/${BINARY_NAME}_${PLATFORM}_${BINARY_ARCH}"
+  CLI_URL="https://github.com/$REPO/releases/latest/download/${CLI_NAME}_${PLATFORM}_${BINARY_ARCH}"
+  CORE_URL="https://github.com/$REPO/releases/latest/download/${CORE_NAME}_${PLATFORM}_${BINARY_ARCH}"
 fi
 
 INSTALL_DIR="/usr/local/bin"
@@ -52,21 +56,33 @@ else
   SUDO=""
 fi
 
-echo "🏎️  Downloading Hexagen compiler ($BINARY_NAME) for ${PLATFORM}_${BINARY_ARCH}..."
-TEMP_FILE=$(mktemp)
+download_file() {
+  url="$1"
+  dest="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$dest"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$dest" "$url"
+  else
+    echo "❌ Error: curl or wget is required to run this install script."
+    exit 1
+  fi
+}
 
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$DOWNLOAD_URL" -o "$TEMP_FILE"
-elif command -v wget >/dev/null 2>&1; then
-  wget -qO "$TEMP_FILE" "$DOWNLOAD_URL"
-else
-  echo "❌ Error: curl or wget is required to run this install script."
-  exit 1
-fi
+echo "🏎️  Downloading Hexagen CLI ($CLI_NAME) for ${PLATFORM}_${BINARY_ARCH}..."
+TEMP_CLI=$(mktemp)
+download_file "$CLI_URL" "$TEMP_CLI"
 
-echo "⚙️  Installing to $INSTALL_DIR/$BINARY_NAME..."
-$SUDO mv "$TEMP_FILE" "$INSTALL_DIR/$BINARY_NAME"
-$SUDO chmod +x "$INSTALL_DIR/$BINARY_NAME"
+echo "🏎️  Downloading Hexagen Compiler Core ($CORE_NAME) for ${PLATFORM}_${BINARY_ARCH}..."
+TEMP_CORE=$(mktemp)
+download_file "$CORE_URL" "$TEMP_CORE"
 
-echo "\n✨ Hexagen Framework ($BINARY_NAME) installed successfully!"
+echo "⚙️  Installing binaries to $INSTALL_DIR..."
+$SUDO mv "$TEMP_CLI" "$INSTALL_DIR/$CLI_NAME"
+$SUDO chmod +x "$INSTALL_DIR/$CLI_NAME"
+
+$SUDO mv "$TEMP_CORE" "$INSTALL_DIR/$CORE_NAME"
+$SUDO chmod +x "$INSTALL_DIR/$CORE_NAME"
+
+echo "\n✨ Hexagen Framework installed successfully!"
 echo "👉 Run 'hf --help' to verify the installation."

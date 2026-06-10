@@ -3,14 +3,15 @@ CXXFLAGS = -std=c++17 -Wall -Wextra
 
 SRC_DIR = src
 BUILD_DIR = build
-TARGET = hf
+TARGET_CORE = hf_core
+TARGET_CLI = hf
 
 SRCS = $(wildcard $(SRC_DIR)/*.cpp)
 OBJS = $(SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 
-all: $(TARGET)
+all: $(TARGET_CORE) cli
 
-$(TARGET): $(OBJS)
+$(TARGET_CORE): $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
@@ -19,7 +20,16 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-clean:
-	rm -rf $(BUILD_DIR) $(TARGET)
+cli:
+	@if command -v go >/dev/null 2>&1; then \
+		echo "🐹 Compiling Go CLI wrapper..."; \
+		go build -o $(TARGET_CLI) cli/main.go; \
+	else \
+		echo "⚠️  Warning: Go is not installed. Skipping Go CLI build."; \
+		echo "👉 Please install Go (e.g., 'sudo dnf install golang') and run 'make cli'."; \
+	fi
 
-.PHONY: all clean
+clean:
+	rm -rf $(BUILD_DIR) $(TARGET_CORE) $(TARGET_CLI)
+
+.PHONY: all clean cli
