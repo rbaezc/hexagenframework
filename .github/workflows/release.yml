@@ -1,0 +1,65 @@
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: hf_linux_x86_64
+            compile_cmd: g++ -std=c++17 -O3 src/codegen.cpp src/lexer.cpp src/parser.cpp src/main.cpp -o hf_linux_x86_64
+          - os: macos-latest
+            artifact_name: hf_darwin_arm64
+            compile_cmd: clang++ -std=c++17 -O3 src/codegen.cpp src/lexer.cpp src/parser.cpp src/main.cpp -o hf_darwin_arm64 -target arm64-apple-macos11
+          - os: windows-latest
+            artifact_name: hf_windows_x86_64.exe
+            compile_cmd: g++ -std=c++17 -O3 src/codegen.cpp src/lexer.cpp src/parser.cpp src/main.cpp -o hf_windows_x86_64.exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compile binary
+        run: ${{ matrix.compile_cmd }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: ./dist
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ./dist/hf_linux_x86_64
+            ./dist/hf_darwin_arm64
+            ./dist/hf_windows_x86_64.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

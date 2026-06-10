@@ -1,0 +1,15 @@
+# Compilados de C++ / Ejecutables
+hf
+mi_servidor
+mi_servidor_app
+temp_dev_server
+temp_hexagen_run
+build/
+*.o
+
+# Bases de datos locales
+*.jsonl
+
+# Directorios de pruebas locales
+mi_app/
+temp_codegen.cpp

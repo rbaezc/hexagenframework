@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hexagen Framework Dev Server</title>
+    <meta name="description" content="Hexagen Framework - Server-Driven UI interpretado por JS con transacciones de C++ y orquestado por Go.">
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --card-bg: rgba(20, 30, 55, 0.45);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --primary-glow: #00f2fe;
+            --secondary-glow: #4facfe;
+            --text-color: #f3f4f6;
+            --text-muted: #9ca3af;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        body::before {
+            content: '';
+            position: absolute;
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, var(--primary-glow) 0%, transparent 70%);
+            top: 10%;
+            left: 15%;
+            opacity: 0.15;
+            filter: blur(80px);
+            z-index: 0;
+        }
+
+        body::after {
+            content: '';
+            position: absolute;
+            width: 350px;
+            height: 350px;
+            background: radial-gradient(circle, var(--secondary-glow) 0%, transparent 70%);
+            bottom: 15%;
+            right: 15%;
+            opacity: 0.15;
+            filter: blur(80px);
+            z-index: 0;
+        }
+
+        header, main, footer {
+            z-index: 1;
+            width: 100%;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 550px;
+            padding: 2rem;
+        }
+
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--border-color);
+            border-radius: 24px;
+            padding: 2.5rem;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .card:hover {
+            border-color: rgba(0, 242, 254, 0.25);
+            box-shadow: 0 20px 50px rgba(0, 242, 254, 0.05);
+        }
+
+        .heading-container {
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+
+        .main-heading {
+            font-size: 2rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+
+        .sub-heading {
+            font-size: 0.95rem;
+            color: var(--text-muted);
+            font-weight: 400;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+            position: relative;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            transition: color 0.3s ease;
+        }
+
+        .form-input {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 0.85rem 1rem;
+            color: white;
+            font-family: inherit;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--primary-glow);
+            background: rgba(255, 255, 255, 0.06);
+            box-shadow: 0 0 15px rgba(0, 242, 254, 0.15);
+        }
+
+        .btn {
+            width: 100%;
+            background: linear-gradient(135deg, var(--secondary-glow) 0%, var(--primary-glow) 100%);
+            border: none;
+            color: #0b0f19;
+            padding: 1rem;
+            font-size: 1rem;
+            font-weight: 700;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 242, 254, 0.2);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 242, 254, 0.35);
+            filter: brightness(1.1);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .result-panel {
+            margin-top: 2rem;
+            background: rgba(0, 0, 0, 0.25);
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            padding: 1.25rem;
+            display: none;
+            animation: fadeIn 0.4s ease;
+        }
+
+        .result-title {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--primary-glow);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+        }
+
+        .result-code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+            color: #e5e7eb;
+        }
+
+        .badge {
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            border: 1px solid rgba(52, 211, 153, 0.2);
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.25rem 0.6rem;
+            border-radius: 9999px;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+
+        .badge::before {
+            content: '';
+            width: 6px;
+            height: 6px;
+            background-color: #34d399;
+            border-radius: 50%;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 0.6; }
+            50% { transform: scale(1.2); opacity: 1; }
+            100% { transform: scale(0.9); opacity: 0.6; }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        footer {
+            margin-top: 2rem;
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+    <header class="container" style="display: none;"></header>
+
+    <main class="container">
+        <section class="card" style="position: relative;">
+            <div class="badge" id="status-badge">Hot Reload Activo</div>
+            <div id="hexa-root"></div>
+            <div class="result-panel" id="result-panel">
+                <div class="result-title" id="result-title">Respuesta del Core C++</div>
+                <pre class="result-code"><code id="result-code"></code></pre>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        Hexagen Framework &copy; 2026 - Vortex Solutions
+    </footer>
+
+    <script>
+        const root = document.getElementById('hexa-root');
+        const resultPanel = document.getElementById('result-panel');
+        const resultCode = document.getElementById('result-code');
+        const statusBadge = document.getElementById('status-badge');
+
+        async function fetchBundle() {
+            try {
+                const response = await fetch('/bundle');
+                const bundle = await response.json();
+                document.title = bundle.title || "Hexagen App";
+                renderUI(bundle);
+            } catch (err) {
+                console.error("Error fetching bundle:", err);
+            }
+        }
+
+        function renderUI(bundle) {
+            root.innerHTML = '';
+            
+            bundle.components.forEach((component, idx) => {
+                switch(component.type) {
+                    case 'heading': {
+                        const div = document.createElement('div');
+                        div.className = 'heading-container';
+                        
+                        const h1 = document.createElement('h1');
+                        h1.className = 'main-heading';
+                        h1.id = `heading-title-${idx}`;
+                        h1.innerText = component.text;
+                        
+                        div.appendChild(h1);
+
+                        if (component.subtitle) {
+                            const p = document.createElement('p');
+                            p.className = 'sub-heading';
+                            p.id = `heading-sub-${idx}`;
+                            p.innerText = component.subtitle;
+                            div.appendChild(p);
+                        }
+                        root.appendChild(div);
+                        break;
+                    }
+                    case 'input': {
+                        const group = document.createElement('div');
+                        group.className = 'form-group';
+                        
+                        const label = document.createElement('label');
+                        label.className = 'form-label';
+                        label.htmlFor = `input-${component.name}`;
+                        label.innerText = component.label;
+                        
+                        const input = document.createElement('input');
+                        input.type = 'text';
+                        input.className = 'form-input';
+                        input.id = `input-${component.name}`;
+                        input.name = component.name;
+                        input.placeholder = component.placeholder || '';
+                        
+                        group.appendChild(label);
+                        group.appendChild(input);
+                        root.appendChild(group);
+                        break;
+                    }
+                    case 'button': {
+                        const btn = document.createElement('button');
+                        btn.className = 'btn';
+                        btn.id = `btn-action-${component.action.toLowerCase()}`;
+                        btn.innerHTML = `${component.text}`;
+                        btn.addEventListener('click', () => triggerAction(component.action));
+                        root.appendChild(btn);
+                        break;
+                    }
+                }
+            });
+        }
+
+        async function triggerAction(actionName) {
+            resultPanel.style.display = 'none';
+            
+            const payload = {};
+            const inputs = document.querySelectorAll('.form-input');
+            inputs.forEach(input => {
+                payload[input.name] = input.value;
+            });
+
+            try {
+                const response = await fetch('/execute', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                const data = await response.json();
+                resultCode.innerText = JSON.stringify(data, null, 2);
+                resultPanel.style.display = 'block';
+                
+                if (data.status === 'success') {
+                    document.getElementById('result-title').innerText = "Respuesta del Core C++ (Éxito)";
+                    document.getElementById('result-title').style.color = "#34d399";
+                } else {
+                    document.getElementById('result-title').innerText = "Fallo de Conexión / Error";
+                    document.getElementById('result-title').style.color = "#f87171";
+                }
+            } catch (err) {
+                console.error("Action error:", err);
+                resultCode.innerText = JSON.stringify({
+                    status: "error",
+                    message: "No se pudo conectar con el orquestador de Go."
+                }, null, 2);
+                resultPanel.style.display = 'block';
+            }
+        }
+
+        function setupLiveReload() {
+            const eventSource = new EventSource('/events');
+            
+            eventSource.onmessage = function(event) {
+                if (event.data === 'reload') {
+                    fetchBundle();
+                    statusBadge.innerText = "Recargado en Caliente";
+                    statusBadge.style.color = "#00f2fe";
+                    statusBadge.style.borderColor = "rgba(0, 242, 254, 0.25)";
+                    
+                    setTimeout(() => {
+                        statusBadge.innerText = "Hot Reload Activo";
+                        statusBadge.style.color = "#34d399";
+                        statusBadge.style.borderColor = "rgba(52, 211, 153, 0.2)";
+                    }, 2000);
+                }
+            };
+
+            eventSource.onerror = function() {
+                console.warn("SSE connection lost. Reconnecting...");
+            };
+        }
+
+        fetchBundle();
+        setupLiveReload();
+    </script>
+</body>
+</html>

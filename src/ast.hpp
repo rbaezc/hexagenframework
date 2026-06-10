@@ -1,0 +1,292 @@
+#pragma once
+#include <string>
+#include <vector>
+#include <memory>
+#include <iostream>
+
+enum class DataType {
+    INT,
+    FLOAT,
+    STRING,
+    BOOL,
+    UNKNOWN
+};
+
+inline std::string dataTypeToString(DataType type) {
+    switch (type) {
+        case DataType::INT: return "int";
+        case DataType::FLOAT: return "float";
+        case DataType::STRING: return "std::string";
+        case DataType::BOOL: return "bool";
+        default: return "void";
+    }
+}
+
+class ASTNode {
+public:
+    virtual ~ASTNode() = default;
+    virtual void print(int indent = 0) const = 0;
+};
+
+class ASTExpression : public ASTNode {
+public:
+    virtual ~ASTExpression() = default;
+};
+
+class ASTLiteral : public ASTExpression {
+public:
+    DataType type;
+    std::string value;
+
+    ASTLiteral(DataType type, std::string value) : type(type), value(value) {}
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "Literal (" << dataTypeToString(type) << "): " << value << "\n";
+    }
+};
+
+class ASTIdentifier : public ASTExpression {
+public:
+    std::string name;
+
+    ASTIdentifier(std::string name) : name(name) {}
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "Identifier: " << name << "\n";
+    }
+};
+
+class ASTBinaryExpression : public ASTExpression {
+public:
+    std::string op;
+    std::shared_ptr<ASTExpression> left;
+    std::shared_ptr<ASTExpression> right;
+
+    ASTBinaryExpression(std::string op, std::shared_ptr<ASTExpression> left, std::shared_ptr<ASTExpression> right)
+        : op(op), left(left), right(right) {}
+
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "BinaryExpression (" << op << "):\n";
+        if (left) left->print(indent + 2);
+        if (right) right->print(indent + 2);
+    }
+};
+
+class ASTStatement : public ASTNode {
+public:
+    virtual ~ASTStatement() = default;
+};
+
+class ASTPrintStatement : public ASTStatement {
+public:
+    std::shared_ptr<ASTExpression> expression;
+
+    ASTPrintStatement(std::shared_ptr<ASTExpression> expr) : expression(expr) {}
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "PrintStatement\n";
+        if (expression) expression->print(indent + 2);
+    }
+};
+
+class ASTAssignmentStatement : public ASTStatement {
+public:
+    std::string variableName;
+    std::shared_ptr<ASTExpression> expression;
+
+    ASTAssignmentStatement(std::string varName, std::shared_ptr<ASTExpression> expr)
+        : variableName(varName), expression(expr) {}
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "AssignmentStatement: " << variableName << " =\n";
+        if (expression) expression->print(indent + 2);
+    }
+};
+
+class ASTIfStatement : public ASTStatement {
+public:
+    std::shared_ptr<ASTExpression> condition;
+    std::vector<std::shared_ptr<ASTStatement>> thenBranch;
+    std::vector<std::shared_ptr<ASTStatement>> elseBranch;
+
+    ASTIfStatement(std::shared_ptr<ASTExpression> cond) : condition(cond) {}
+
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "IfStatement\n";
+        std::cout << std::string(indent + 2, ' ') << "Condition:\n";
+        if (condition) condition->print(indent + 4);
+        std::cout << std::string(indent + 2, ' ') << "Then:\n";
+        for (const auto& stmt : thenBranch) {
+            stmt->print(indent + 4);
+        }
+        if (!elseBranch.empty()) {
+            std::cout << std::string(indent + 2, ' ') << "Else:\n";
+            for (const auto& stmt : elseBranch) {
+                stmt->print(indent + 4);
+            }
+        }
+    }
+};
+
+class ASTWhileStatement : public ASTStatement {
+public:
+    std::shared_ptr<ASTExpression> condition;
+    std::vector<std::shared_ptr<ASTStatement>> body;
+
+    ASTWhileStatement(std::shared_ptr<ASTExpression> cond) : condition(cond) {}
+
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "WhileStatement\n";
+        std::cout << std::string(indent + 2, ' ') << "Condition:\n";
+        if (condition) condition->print(indent + 4);
+        std::cout << std::string(indent + 2, ' ') << "Body:\n";
+        for (const auto& stmt : body) {
+            stmt->print(indent + 4);
+        }
+    }
+};
+
+class ASTCallStatement : public ASTStatement {
+public:
+    std::string actionName;
+
+    ASTCallStatement(std::string name) : actionName(name) {}
+
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "CallStatement: " << actionName << "()\n";
+    }
+};
+
+class ASTField : public ASTNode {
+public:
+    std::string name;
+    DataType type;
+
+    ASTField(std::string name, DataType type) : name(name), type(type) {}
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "Field: " << name << " (" << dataTypeToString(type) << ")\n";
+    }
+};
+
+class ASTAction : public ASTNode {
+public:
+    std::string name;
+    std::vector<std::shared_ptr<ASTStatement>> statements;
+
+    ASTAction(std::string name) : name(name) {}
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "Action: " << name << "\n";
+        for (const auto& stmt : statements) {
+            stmt->print(indent + 2);
+        }
+    }
+};
+
+class ASTSlice : public ASTNode {
+public:
+    std::string name;
+    std::vector<std::shared_ptr<ASTField>> fields;
+    std::vector<std::shared_ptr<ASTAction>> actions;
+
+    ASTSlice(std::string name) : name(name) {}
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "Slice: " << name << "\n";
+        std::cout << std::string(indent + 2, ' ') << "Fields:\n";
+        for (const auto& field : fields) {
+            field->print(indent + 4);
+        }
+        std::cout << std::string(indent + 2, ' ') << "Actions:\n";
+        for (const auto& action : actions) {
+            action->print(indent + 4);
+        }
+    }
+};
+
+// UI View AST Classes
+class ASTViewField : public ASTNode {
+public:
+    std::string type;         // "title", "input", "button", "table"
+    std::string label;        // Text of title/button label, or datasource for table
+    std::string name;         // Input variable name
+    std::string targetAction; // Action callback
+    std::vector<std::string> columns; // Table columns if type is "table"
+
+    ASTViewField(std::string type, std::string label, std::string name, std::string target)
+        : type(type), label(label), name(name), targetAction(target) {}
+
+    ASTViewField(std::string type, std::string label, std::vector<std::string> cols)
+        : type(type), label(label), name(""), targetAction(""), columns(cols) {}
+
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "ViewField (" << type << "): \"" << label << "\"";
+        if (!name.empty()) std::cout << " name=" << name;
+        if (!targetAction.empty()) std::cout << " -> " << targetAction;
+        if (!columns.empty()) {
+            std::cout << " cols=[";
+            for (size_t i = 0; i < columns.size(); ++i) {
+                std::cout << columns[i] << (i + 1 < columns.size() ? "," : "");
+            }
+            std::cout << "]";
+        }
+        std::cout << "\n";
+    }
+};
+
+class ASTView : public ASTNode {
+public:
+    std::string name;
+    std::vector<std::shared_ptr<ASTViewField>> elements;
+
+    ASTView(std::string name) : name(name) {}
+
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "View: " << name << "\n";
+        for (const auto& elem : elements) {
+            elem->print(indent + 2);
+        }
+    }
+};
+
+// API Routing AST Classes
+class ASTRoute : public ASTNode {
+public:
+    std::string path;
+    std::string method;        // "GET", "POST", etc.
+    std::string targetAction;  // e.g., "Inventario.Agregar"
+    bool isSecure;
+
+    ASTRoute(std::string path, std::string method, std::string target, bool isSecure = false)
+        : path(path), method(method), targetAction(target), isSecure(isSecure) {}
+
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "Route: " << method << " " << path << " -> " << targetAction;
+        if (isSecure) std::cout << " [SECURE]";
+        std::cout << "\n";
+    }
+};
+
+class ASTApi : public ASTNode {
+public:
+    std::string name;
+    std::vector<std::shared_ptr<ASTRoute>> routes;
+
+    ASTApi(std::string name) : name(name) {}
+
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "API: " << name << "\n";
+        for (const auto& route : routes) {
+            route->print(indent + 2);
+        }
+    }
+};
+
+// Main Unified Program AST
+class ASTProgram : public ASTNode {
+public:
+    std::vector<std::shared_ptr<ASTSlice>> slices;
+    std::vector<std::shared_ptr<ASTView>> views;
+    std::vector<std::shared_ptr<ASTApi>> apis;
+
+    void print(int indent = 0) const override {
+        std::cout << "Program AST:\n";
+        for (const auto& slice : slices) slice->print(indent + 2);
+        for (const auto& view : views) view->print(indent + 2);
+        for (const auto& api : apis) api->print(indent + 2);
+    }
+};
