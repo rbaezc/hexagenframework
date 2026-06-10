@@ -500,18 +500,10 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "            std::string req(buffer, valread);\n";
         
         // Dynamic multi-view routing
-        bool isFirstView = true;
-        for (const auto& view : program->views) {
-            std::string viewNameLower = view->name;
-            std::transform(viewNameLower.begin(), viewNameLower.end(), viewNameLower.begin(), ::tolower);
-            
-            if (isFirstView) {
-                ss << "            if (req.rfind(\"GET /" << viewNameLower << " \", 0) == 0 || req.rfind(\"GET / \", 0) == 0 || req.rfind(\"GET /index.html\", 0) == 0) {\n";
-                isFirstView = false;
-            } else {
-                ss << "            else if (req.rfind(\"GET /" << viewNameLower << " \", 0) == 0) {\n";
-            }
-            ss << "                std::string html = HTML_" << view->name << ";\n";
+        bool isFirstRoute = true;
+        if (program->views.empty()) {
+            ss << "            if (req.rfind(\"GET / \", 0) == 0 || req.rfind(\"GET /index.html\", 0) == 0 || req.rfind(\"GET /home \", 0) == 0) {\n";
+            ss << "                std::string html = HTML_CONTENT;\n";
             ss << "                std::stringstream resp;\n";
             ss << "                resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
             ss << "                     << \"Content-Type: text/html; charset=utf-8\\r\\n\"\n";
@@ -519,11 +511,37 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             ss << "                     << html;\n";
             ss << "                send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
             ss << "            }\n";
+            isFirstRoute = false;
+        } else {
+            for (const auto& view : program->views) {
+                std::string viewNameLower = view->name;
+                std::transform(viewNameLower.begin(), viewNameLower.end(), viewNameLower.begin(), ::tolower);
+                
+                if (isFirstRoute) {
+                    ss << "            if (req.rfind(\"GET /" << viewNameLower << " \", 0) == 0 || req.rfind(\"GET / \", 0) == 0 || req.rfind(\"GET /index.html\", 0) == 0) {\n";
+                    isFirstRoute = false;
+                } else {
+                    ss << "            else if (req.rfind(\"GET /" << viewNameLower << " \", 0) == 0) {\n";
+                }
+                ss << "                std::string html = HTML_" << view->name << ";\n";
+                ss << "                std::stringstream resp;\n";
+                ss << "                resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
+                ss << "                     << \"Content-Type: text/html; charset=utf-8\\r\\n\"\n";
+                ss << "                     << \"Content-Length: \" << html.length() << \"\\r\\n\\r\\n\"\n";
+                ss << "                     << html;\n";
+                ss << "                send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+                ss << "            }\n";
+            }
         }
 
         // Route serving database tables queries
         for (const auto& slice : program->slices) {
-            ss << "            else if (req.find(\"GET /api/" << slice->name << "\") != std::string::npos) {\n";
+            if (isFirstRoute) {
+                ss << "            if (req.find(\"GET /api/" << slice->name << "\") != std::string::npos) {\n";
+                isFirstRoute = false;
+            } else {
+                ss << "            else if (req.find(\"GET /api/" << slice->name << "\") != std::string::npos) {\n";
+            }
             ss << "                std::string json = " << slice->name << "::getAllAsJSON();\n";
             ss << "                std::stringstream resp;\n";
             ss << "                resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
@@ -538,7 +556,12 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         // Routing for API endpoints
         if (!program->apis.empty()) {
             for (const auto& r : program->apis[0]->routes) {
-                ss << "            else if (req.find(\"" << r->method << " " << r->path << "\") != std::string::npos) {\n";
+                if (isFirstRoute) {
+                    ss << "            if (req.find(\"" << r->method << " " << r->path << "\") != std::string::npos) {\n";
+                    isFirstRoute = false;
+                } else {
+                    ss << "            else if (req.find(\"" << r->method << " " << r->path << "\") != std::string::npos) {\n";
+                }
                 if (r->isSecure) {
                     ss << "                if (req.find(\"Authorization: Bearer hexagen_token_123\") == std::string::npos) {\n";
                     ss << "                    std::string msg = \"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"Unauthorized\\\"}\";\n";
