@@ -53,16 +53,25 @@ std::shared_ptr<ASTField> Parser::parseField() {
     consume(TokenType::COLON, "Expected ':' after field name");
 
     DataType type = DataType::UNKNOWN;
+    std::string relatedSlice = "";
     const auto& typeTok = peek();
     if (match(TokenType::TYPE_INT)) type = DataType::INT;
     else if (match(TokenType::TYPE_STRING)) type = DataType::STRING;
     else if (match(TokenType::TYPE_FLOAT)) type = DataType::FLOAT;
     else if (match(TokenType::TYPE_BOOL)) type = DataType::BOOL;
-    else {
+    else if (check(TokenType::IDENTIFIER) && peek().value == "relation") {
+        consume(TokenType::IDENTIFIER, "Expected 'relation'");
+        consume(TokenType::LPAREN, "Expected '(' after 'relation'");
+        const auto& relTok = peek();
+        consume(TokenType::IDENTIFIER, "Expected related slice identifier");
+        relatedSlice = relTok.value;
+        consume(TokenType::RPAREN, "Expected ')' after related slice name");
+        type = DataType::RELATION;
+    } else {
         throw std::runtime_error("Unknown data type '" + typeTok.value + "' at line " + std::to_string(typeTok.line));
     }
 
-    return std::make_shared<ASTField>(fieldName, type);
+    return std::make_shared<ASTField>(fieldName, type, relatedSlice);
 }
 
 std::shared_ptr<ASTAction> Parser::parseAction() {

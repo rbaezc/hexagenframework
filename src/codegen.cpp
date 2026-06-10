@@ -185,7 +185,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
             const auto& field = slice->fields[i];
             if (field->type == DataType::STRING) {
                 ss << "            sqlite3_bind_text(stmt, " << (i + 1) << ", " << field->name << ".c_str(), -1, SQLITE_TRANSIENT);\n";
-            } else if (field->type == DataType::INT) {
+            } else if (field->type == DataType::INT || field->type == DataType::RELATION) {
                 ss << "            sqlite3_bind_int(stmt, " << (i + 1) << ", " << field->name << ");\n";
             } else if (field->type == DataType::FLOAT) {
                 ss << "            sqlite3_bind_double(stmt, " << (i + 1) << ", " << field->name << ");\n";
@@ -256,7 +256,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
                 ss << "                bind[" << i << "].buffer_type = MYSQL_TYPE_STRING;\n";
                 ss << "                bind[" << i << "].buffer = (char*)" << field->name << ".c_str();\n";
                 ss << "                bind[" << i << "].buffer_length = " << field->name << ".length();\n";
-            } else if (field->type == DataType::INT) {
+            } else if (field->type == DataType::INT || field->type == DataType::RELATION) {
                 ss << "                bind[" << i << "].buffer_type = MYSQL_TYPE_LONG;\n";
                 ss << "                bind[" << i << "].buffer = &" << field->name << ";\n";
             } else if (field->type == DataType::FLOAT) {
@@ -302,7 +302,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
             int colIdx = i + 1; // 0 is id
             if (field->type == DataType::STRING) {
                 ss << "                ss << \"\\\"\" << sqlite3_column_text(stmt, " << colIdx << ") << \"\\\"\";\n";
-            } else if (field->type == DataType::INT) {
+            } else if (field->type == DataType::INT || field->type == DataType::RELATION) {
                 ss << "                ss << sqlite3_column_int(stmt, " << colIdx << ");\n";
             } else if (field->type == DataType::FLOAT) {
                 ss << "                ss << sqlite3_column_double(stmt, " << colIdx << ");\n";
@@ -941,6 +941,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             for (const auto& field : slice->fields) {
                 ss << ", \\\"" << field->name << "\\\" ";
                 if (field->type == DataType::INT) ss << "INTEGER";
+                else if (field->type == DataType::RELATION) ss << "INTEGER REFERENCES \\\"" << field->relatedSlice << "\\\"(id)";
                 else if (field->type == DataType::FLOAT) ss << "REAL";
                 else if (field->type == DataType::BOOL) ss << "INTEGER";
                 else ss << "TEXT";
@@ -961,6 +962,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             for (const auto& field : slice->fields) {
                 ss << ", \\\"" << field->name << "\\\" ";
                 if (field->type == DataType::INT) ss << "INT";
+                else if (field->type == DataType::RELATION) ss << "INT REFERENCES \\\"" << field->relatedSlice << "\\\"(id)";
                 else if (field->type == DataType::FLOAT) ss << "REAL";
                 else if (field->type == DataType::BOOL) ss << "BOOLEAN";
                 else ss << "VARCHAR(255)";
@@ -981,6 +983,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             for (const auto& field : slice->fields) {
                 ss << ", `" << field->name << "` ";
                 if (field->type == DataType::INT) ss << "INT";
+                else if (field->type == DataType::RELATION) ss << "INT REFERENCES `" << field->relatedSlice << "`(id)";
                 else if (field->type == DataType::FLOAT) ss << "DOUBLE";
                 else if (field->type == DataType::BOOL) ss << "TINYINT(1)";
                 else ss << "VARCHAR(255)";
@@ -1145,7 +1148,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                             if (slice->name == sliceName) {
                                 for (const auto& field : slice->fields) {
                                     ss << "                instance." << field->name << " = ";
-                                                                        if (field->type == DataType::INT) {
+                                                                        if (field->type == DataType::INT || field->type == DataType::RELATION) {
                                         ss << "safeStoi(getJSONVal(body, \"" << field->name << "\"));\n";
                                     } else if (field->type == DataType::STRING) {
                                         ss << "getJSONVal(body, \"" << field->name << "\");\n";

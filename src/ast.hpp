@@ -9,6 +9,7 @@ enum class DataType {
     FLOAT,
     STRING,
     BOOL,
+    RELATION,
     UNKNOWN
 };
 
@@ -18,6 +19,7 @@ inline std::string dataTypeToString(DataType type) {
         case DataType::FLOAT: return "float";
         case DataType::STRING: return "std::string";
         case DataType::BOOL: return "bool";
+        case DataType::RELATION: return "int";
         default: return "void";
     }
 }
@@ -157,10 +159,14 @@ class ASTField : public ASTNode {
 public:
     std::string name;
     DataType type;
+    std::string relatedSlice;
 
-    ASTField(std::string name, DataType type) : name(name), type(type) {}
+    ASTField(std::string name, DataType type, std::string relatedSlice = "")
+        : name(name), type(type), relatedSlice(relatedSlice) {}
+
     void print(int indent = 0) const override {
-        std::cout << std::string(indent, ' ') << "Field: " << name << " (" << dataTypeToString(type) << ")\n";
+        std::cout << std::string(indent, ' ') << "Field: " << name << " (" << dataTypeToString(type)
+                  << (type == DataType::RELATION ? ", related to " + relatedSlice : "") << ")\n";
     }
 };
 
