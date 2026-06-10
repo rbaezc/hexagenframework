@@ -15,11 +15,12 @@ func printUsage() {
 	fmt.Println("Hexagen Framework CLI (hf)")
 	fmt.Println("Usage:")
 	fmt.Println("  hf new <project_name>               - Scaffold a new project workspace")
-	fmt.Println("  hf dev <file_or_dir>                - Start live development dev server (Hot Reload)")
-	fmt.Println("  hf transpile <file_or_dir>          - Transpile to C++ source code")
-	fmt.Println("  hf compile <file_or_dir> -o <out>   - Transpile and compile to executable")
-	fmt.Println("  hf run <file_or_dir>                - Transpile, compile, and run immediately")
-	fmt.Println("  hf ast <file_or_dir>                - Print the AST of the input source")
+	fmt.Println("  hf dev [file_or_dir]                - Start live dev server (Hot Reload) (default: .)")
+	fmt.Println("  hf start [file_or_dir]              - Compile and run in production mode (default: .)")
+	fmt.Println("  hf transpile [file_or_dir]          - Transpile to C++ source code (default: .)")
+	fmt.Println("  hf compile [file_or_dir] -o <out>   - Transpile and compile to executable (default: .)")
+	fmt.Println("  hf run [file_or_dir]                - Transpile, compile, and run immediately (default: .)")
+	fmt.Println("  hf ast [file_or_dir]                - Print the AST of the input source (default: .)")
 	fmt.Println("  hf help                             - Show this help message")
 }
 
@@ -299,13 +300,35 @@ func main() {
 		os.Exit(0)
 	}
 
-	if len(os.Args) < 3 {
-		fmt.Println("Error: Missing input source (file or directory).")
-		printUsage()
-		os.Exit(1)
-	}
+	// Determine input path and output exe dynamically
+	inputPath := "."
+	outputExe := "a.out"
 
-	inputPath := os.Args[2]
+	if command == "compile" {
+		// Parse compile flags: hf compile [path] -o [output]
+		var remainingArgs []string
+		for i := 2; i < len(os.Args); i++ {
+			if os.Args[i] == "-o" {
+				if i+1 < len(os.Args) {
+					outputExe = os.Args[i+1]
+					i++ // skip output value
+				}
+			} else {
+				remainingArgs = append(remainingArgs, os.Args[i])
+			}
+		}
+		if len(remainingArgs) > 0 {
+			inputPath = remainingArgs[0]
+		}
+	} else {
+		// Defaults to "." if path is omitted
+		if len(os.Args) >= 3 {
+			inputPath = os.Args[2]
+		}
+		if command == "run" || command == "start" {
+			outputExe = "./temp_hexagen_run"
+		}
+	}
 
 	switch command {
 	case "ast":
@@ -327,19 +350,7 @@ func main() {
 	case "dev":
 		handleDev(inputPath)
 
-	case "compile", "run":
-		outputExe := "a.out"
-		if command == "compile" {
-			for i := 3; i < len(os.Args); i++ {
-				if os.Args[i] == "-o" && i+1 < len(os.Args) {
-					outputExe = os.Args[i+1]
-					break
-				}
-			}
-		} else {
-			outputExe = "./temp_hexagen_run"
-		}
-
+	case "compile", "run", "start":
 		// Transpile
 		cppCode, err := runCore("transpile", inputPath)
 		if err != nil {
@@ -368,7 +379,7 @@ func main() {
 
 		fmt.Println("[Hexagen] Compilation successful!")
 
-		if command == "run" {
+		if command == "run" || command == "start" {
 			fmt.Println("[Hexagen] Running executable...\n")
 			runCmd := exec.Command(outputExe)
 			runCmd.Stdout = os.Stdout
