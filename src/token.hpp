@@ -48,6 +48,7 @@ enum class TokenType {
     IF,
     ELSE,
     WHILE,
+    CONFIG, // "config"
 
     // Types
     TYPE_INT,
@@ -106,6 +107,7 @@ inline std::string tokenTypeToString(TokenType type) {
         case TokenType::IF: return "if";
         case TokenType::ELSE: return "else";
         case TokenType::WHILE: return "while";
+        case TokenType::CONFIG: return "config";
         case TokenType::TYPE_INT: return "int";
         case TokenType::TYPE_STRING: return "string";
         case TokenType::TYPE_FLOAT: return "float";

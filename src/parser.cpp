@@ -9,6 +9,8 @@ std::shared_ptr<ASTProgram> Parser::parse() {
             program->views.push_back(parseView());
         } else if (check(TokenType::API)) {
             program->apis.push_back(parseApi());
+        } else if (check(TokenType::CONFIG)) {
+            parseConfig(program);
         } else {
             const auto& tok = peek();
             throw std::runtime_error("Unexpected token '" + tok.value + "' at root level, line " + std::to_string(tok.line));
@@ -309,4 +311,23 @@ std::shared_ptr<ASTExpression> Parser::parsePrimary() {
         throw std::runtime_error("Expected primary expression (literal, variable, or grouped expression) at line " +
                                  std::to_string(tok.line) + ", got: '" + tok.value + "'");
     }
+}
+
+void Parser::parseConfig(std::shared_ptr<ASTProgram> program) {
+    consume(TokenType::CONFIG, "Expected 'config'");
+    consume(TokenType::LBRACE, "Expected '{' to open config block");
+    while (!check(TokenType::RBRACE) && !check(TokenType::END_OF_FILE)) {
+        const auto& keyTok = peek();
+        consume(TokenType::IDENTIFIER, "Expected config parameter key");
+        consume(TokenType::COLON, "Expected ':' after config parameter key");
+        
+        if (keyTok.value == "database") {
+            const auto& valTok = peek();
+            consume(TokenType::IDENTIFIER, "Expected database type identifier (e.g., jsonl, postgres, mysql, sqlite)");
+            program->dbType = valTok.value;
+        } else {
+            advance(); // consume value
+        }
+    }
+    consume(TokenType::RBRACE, "Expected '}' to close config block");
 }

@@ -49,6 +49,7 @@ private:
     // View and API Parsing
     std::shared_ptr<ASTView> parseView();
     std::shared_ptr<ASTApi> parseApi();
+    void parseConfig(std::shared_ptr<ASTProgram> program);
     
     // Expression Parsing Helpers
     std::shared_ptr<ASTExpression> parseExpression();

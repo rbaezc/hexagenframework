@@ -428,6 +428,7 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
 std::string CodeGenerator::generateSourceCode(bool includeMain) {
     std::stringstream ss;
     ss << "// Generated automatically by Hexagen Framework\n";
+    ss << "// Database Engine: " << program->dbType << "\n";
     ss << "#include <iostream>\n";
     ss << "#include <string>\n";
     ss << "#include <sstream>\n";

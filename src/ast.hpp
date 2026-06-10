@@ -279,12 +279,13 @@ public:
 // Main Unified Program AST
 class ASTProgram : public ASTNode {
 public:
+    std::string dbType = "jsonl"; // Default database type
     std::vector<std::shared_ptr<ASTSlice>> slices;
     std::vector<std::shared_ptr<ASTView>> views;
     std::vector<std::shared_ptr<ASTApi>> apis;
 
     void print(int indent = 0) const override {
-        std::cout << "Program AST:\n";
+        std::cout << "Program AST (DB Engine: " << dbType << "):\n";
         for (const auto& slice : slices) slice->print(indent + 2);
         for (const auto& view : views) view->print(indent + 2);
         for (const auto& api : apis) api->print(indent + 2);
