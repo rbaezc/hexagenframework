@@ -340,11 +340,11 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
             ss << "                        const tr = document.createElement('tr');\n";
             ss << "                        let rowHtml = '';\n";
             for (const auto& col : elem->columns) {
-                ss << "                        rowHtml += `<td>\\${row." << col << " || ''}</td>`;\n";
+                ss << "                        rowHtml += `<td>${row." << col << " || ''}</td>`;\n";
             }
             if (hasDeleteRoute) {
                 std::string keyCol = elem->columns.empty() ? "" : elem->columns[0];
-                ss << "                        rowHtml += `<td><button class=\"btn\" style=\"padding:0.4rem 0.8rem; font-size:0.8rem; margin:0; width:auto; background:linear-gradient(135deg, #f43f5e 0%, #e11d48 100%); color:white;\" onclick=\"deleteRow('\\${row." << keyCol << "}', '" << deleteEndpoint << "')\">Eliminar</button></td>`;\n";
+                ss << "                        rowHtml += `<td><button class=\"btn\" style=\"padding:0.4rem 0.8rem; font-size:0.8rem; margin:0; width:auto; background:linear-gradient(135deg, #f43f5e 0%, #e11d48 100%); color:white;\" onclick=\"deleteRow('${row." << keyCol << "}', '" << deleteEndpoint << "')\">Eliminar</button></td>`;\n";
             }
             ss << "                        tr.innerHTML = rowHtml;\n";
             ss << "                        tbody.appendChild(tr);\n";
