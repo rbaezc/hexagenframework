@@ -77,8 +77,24 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     
     ss << "\n";
 
-    // Dynamic Database Save Method (Pillar 1)
-    ss << "    void save() {\n";
+    std::string dbType = program->dbType;
+
+    // Helper to get SQL column escape char
+    auto escapeCol = [&](const std::string& name) {
+        if (dbType == "mysql") {
+            return "`" + name + "`";
+        } else if (dbType == "postgres" || dbType == "postgresql") {
+            return "\\\"" + name + "\\\"";
+        } else {
+            return "\\\"" + name + "\\\""; // default to double quotes
+        }
+    };
+
+    // -------------------------------------------------------------
+    // JSONL Fallbacks
+    // -------------------------------------------------------------
+    // saveJSONL
+    ss << "    void saveJSONL() {\n";
     ss << "        std::ofstream outfile(\"db_" << slice->name << ".jsonl\", std::ios::app);\n";
     ss << "        if (outfile.is_open()) {\n";
     ss << "            outfile << \"{\";\n";
@@ -101,8 +117,8 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     ss << "        }\n";
     ss << "    }\n\n";
 
-    // Dynamic Database Get All Method (Pillar 1)
-    ss << "    static std::string getAllAsJSON() {\n";
+    // getAllAsJSON_JSONL
+    ss << "    static std::string getAllAsJSON_JSONL() {\n";
     ss << "        std::ifstream infile(\"db_" << slice->name << ".jsonl\");\n";
     ss << "        std::stringstream ss;\n";
     ss << "        ss << \"[\";\n";
@@ -121,8 +137,8 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     ss << "        return ss.str();\n";
     ss << "    }\n\n";
 
-    // Dynamic Database Delete Method (Pillar 1)
-    ss << "    static void deleteRecord(const std::string& key, const std::string& value) {\n";
+    // deleteRecord_JSONL
+    ss << "    static void deleteRecord_JSONL(const std::string& key, const std::string& value) {\n";
     ss << "        std::ifstream infile(\"db_" << slice->name << ".jsonl\");\n";
     ss << "        std::vector<std::string> lines;\n";
     ss << "        if (infile.is_open()) {\n";
@@ -142,6 +158,318 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     ss << "            }\n";
     ss << "            outfile.close();\n";
     ss << "        }\n";
+    ss << "    }\n\n";
+
+    // -------------------------------------------------------------
+    // save() Method
+    // -------------------------------------------------------------
+    ss << "    void save() {\n";
+    if (dbType == "sqlite") {
+        ss << "        sqlite3* db = getSQLiteConn();\n";
+        ss << "        if (!db) {\n";
+        ss << "            saveJSONL();\n";
+        ss << "            return;\n";
+        ss << "        }\n";
+        ss << "        std::string query = \"INSERT INTO \\\"" << slice->name << "\\\" (";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            ss << "\\\"" << slice->fields[i]->name << "\\\"" << (i + 1 < slice->fields.size() ? ", " : "");
+        }
+        ss << ") VALUES (";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            ss << "?" << (i + 1 < slice->fields.size() ? ", " : "");
+        }
+        ss << ");\";\n";
+        ss << "        sqlite3_stmt* stmt;\n";
+        ss << "        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {\n";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            const auto& field = slice->fields[i];
+            if (field->type == DataType::STRING) {
+                ss << "            sqlite3_bind_text(stmt, " << (i + 1) << ", " << field->name << ".c_str(), -1, SQLITE_TRANSIENT);\n";
+            } else if (field->type == DataType::INT) {
+                ss << "            sqlite3_bind_int(stmt, " << (i + 1) << ", " << field->name << ");\n";
+            } else if (field->type == DataType::FLOAT) {
+                ss << "            sqlite3_bind_double(stmt, " << (i + 1) << ", " << field->name << ");\n";
+            } else if (field->type == DataType::BOOL) {
+                ss << "            sqlite3_bind_int(stmt, " << (i + 1) << ", " << field->name << " ? 1 : 0);\n";
+            }
+        }
+        ss << "            if (sqlite3_step(stmt) != SQLITE_DONE) {\n";
+        ss << "                std::cerr << \"[SQLite] Insert failed\" << std::endl;\n";
+        ss << "            }\n";
+        ss << "            sqlite3_finalize(stmt);\n";
+        ss << "        }\n";
+        ss << "        sqlite3_close(db);\n";
+    } else if (dbType == "postgres" || dbType == "postgresql") {
+        ss << "        PGconn* conn = getPGConn();\n";
+        ss << "        if (!conn) {\n";
+        ss << "            saveJSONL();\n";
+        ss << "            return;\n";
+        ss << "        }\n";
+        ss << "        const char* paramValues[" << slice->fields.size() << "];\n";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            const auto& field = slice->fields[i];
+            if (field->type == DataType::STRING) {
+                ss << "        paramValues[" << i << "] = " << field->name << ".c_str();\n";
+            } else {
+                ss << "        std::string param_" << field->name << " = std::to_string(" << field->name << ");\n";
+                ss << "        paramValues[" << i << "] = param_" << field->name << ".c_str();\n";
+            }
+        }
+        ss << "        std::string query = \"INSERT INTO \\\"" << slice->name << "\\\" (";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            ss << "\\\"" << slice->fields[i]->name << "\\\"" << (i + 1 < slice->fields.size() ? ", " : "");
+        }
+        ss << ") VALUES (";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            ss << "$" << (i + 1) << (i + 1 < slice->fields.size() ? ", " : "");
+        }
+        ss << ");\";\n";
+        ss << "        PGresult* res = PQexecParams(conn, query.c_str(), " << slice->fields.size() << ", NULL, paramValues, NULL, NULL, 0);\n";
+        ss << "        if (PQresultStatus(res) != PGRES_COMMAND_OK) {\n";
+        ss << "            std::cerr << \"[PostgreSQL] Insert failed: \" << PQerrorMessage(conn) << std::endl;\n";
+        ss << "        }\n";
+        ss << "        PQclear(res);\n";
+        ss << "        PQfinish(conn);\n";
+    } else if (dbType == "mysql") {
+        ss << "        MYSQL* conn = getMySQLConn();\n";
+        ss << "        if (!conn) {\n";
+        ss << "            saveJSONL();\n";
+        ss << "            return;\n";
+        ss << "        }\n";
+        ss << "        MYSQL_STMT* stmt = mysql_stmt_init(conn);\n";
+        ss << "        if (stmt) {\n";
+        ss << "            std::string query = \"INSERT INTO `" << slice->name << "` (";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            ss << "`" << slice->fields[i]->name << "`" << (i + 1 < slice->fields.size() ? ", " : "");
+        }
+        ss << ") VALUES (";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            ss << "?" << (i + 1 < slice->fields.size() ? ", " : "");
+        }
+        ss << ")\";\n";
+        ss << "            if (mysql_stmt_prepare(stmt, query.c_str(), query.length()) == 0) {\n";
+        ss << "                MYSQL_BIND bind[" << slice->fields.size() << "];\n";
+        ss << "                std::memset(bind, 0, sizeof(bind));\n";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            const auto& field = slice->fields[i];
+            if (field->type == DataType::STRING) {
+                ss << "                bind[" << i << "].buffer_type = MYSQL_TYPE_STRING;\n";
+                ss << "                bind[" << i << "].buffer = (char*)" << field->name << ".c_str();\n";
+                ss << "                bind[" << i << "].buffer_length = " << field->name << ".length();\n";
+            } else if (field->type == DataType::INT) {
+                ss << "                bind[" << i << "].buffer_type = MYSQL_TYPE_LONG;\n";
+                ss << "                bind[" << i << "].buffer = &" << field->name << ";\n";
+            } else if (field->type == DataType::FLOAT) {
+                ss << "                bind[" << i << "].buffer_type = MYSQL_TYPE_DOUBLE;\n";
+                ss << "                bind[" << i << "].buffer = &" << field->name << ";\n";
+            } else if (field->type == DataType::BOOL) {
+                ss << "                bind[" << i << "].buffer_type = MYSQL_TYPE_TINY;\n";
+                ss << "                bind[" << i << "].buffer = &" << field->name << ";\n";
+            }
+        }
+        ss << "                mysql_stmt_bind_param(stmt, bind);\n";
+        ss << "                if (mysql_stmt_execute(stmt) != 0) {\n";
+        ss << "                    std::cerr << \"[MySQL] Insert failed: \" << mysql_stmt_error(stmt) << std::endl;\n";
+        ss << "                }\n";
+        ss << "                mysql_stmt_close(stmt);\n";
+        ss << "            }\n";
+        ss << "        }\n";
+        ss << "        mysql_close(conn);\n";
+    } else {
+        ss << "        saveJSONL();\n";
+    }
+    ss << "    }\n\n";
+
+    // -------------------------------------------------------------
+    // getAllAsJSON() Method
+    // -------------------------------------------------------------
+    ss << "    static std::string getAllAsJSON() {\n";
+    if (dbType == "sqlite") {
+        ss << "        sqlite3* db = getSQLiteConn();\n";
+        ss << "        if (!db) return getAllAsJSON_JSONL();\n";
+        ss << "        std::string query = \"SELECT * FROM \\\"" << slice->name << "\\\";\";\n";
+        ss << "        sqlite3_stmt* stmt;\n";
+        ss << "        std::stringstream ss;\n";
+        ss << "        ss << \"[\";\n";
+        ss << "        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {\n";
+        ss << "            bool first = true;\n";
+        ss << "            while (sqlite3_step(stmt) == SQLITE_ROW) {\n";
+        ss << "                if (!first) ss << \",\";\n";
+        ss << "                ss << \"{\";\n";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            const auto& field = slice->fields[i];
+            ss << "                ss << \"\\\"" << field->name << "\\\":\";\n";
+            int colIdx = i + 1; // 0 is id
+            if (field->type == DataType::STRING) {
+                ss << "                ss << \"\\\"\" << sqlite3_column_text(stmt, " << colIdx << ") << \"\\\"\";\n";
+            } else if (field->type == DataType::INT) {
+                ss << "                ss << sqlite3_column_int(stmt, " << colIdx << ");\n";
+            } else if (field->type == DataType::FLOAT) {
+                ss << "                ss << sqlite3_column_double(stmt, " << colIdx << ");\n";
+            } else if (field->type == DataType::BOOL) {
+                ss << "                ss << (sqlite3_column_int(stmt, " << colIdx << ") ? \"true\" : \"false\");\n";
+            }
+            if (i + 1 < slice->fields.size()) {
+                ss << "                ss << \",\";\n";
+            }
+        }
+        ss << "                ss << \"}\";\n";
+        ss << "                first = false;\n";
+        ss << "            }\n";
+        ss << "            sqlite3_finalize(stmt);\n";
+        ss << "        }\n";
+        ss << "        ss << \"]\";\n";
+        ss << "        sqlite3_close(db);\n";
+        ss << "        return ss.str();\n";
+    } else if (dbType == "postgres" || dbType == "postgresql") {
+        ss << "        PGconn* conn = getPGConn();\n";
+        ss << "        if (!conn) return getAllAsJSON_JSONL();\n";
+        ss << "        std::string query = \"SELECT * FROM \\\"" << slice->name << "\\\";\";\n";
+        ss << "        PGresult* res = PQexec(conn, query.c_str());\n";
+        ss << "        if (PQresultStatus(res) != PGRES_TUPLES_OK) {\n";
+        ss << "            PQclear(res);\n";
+        ss << "            PQfinish(conn);\n";
+        ss << "            return getAllAsJSON_JSONL();\n";
+        ss << "        }\n";
+        ss << "        int rows = PQntuples(res);\n";
+        ss << "        std::stringstream ss;\n";
+        ss << "        ss << \"[\";\n";
+        ss << "        for (int i = 0; i < rows; ++i) {\n";
+        ss << "            if (i > 0) ss << \",\";\n";
+        ss << "            ss << \"{\";\n";
+        for (size_t fIdx = 0; fIdx < slice->fields.size(); ++fIdx) {
+            const auto& field = slice->fields[fIdx];
+            ss << "            {\n";
+            ss << "                int colIdx = PQfnumber(res, \"" << field->name << "\");\n";
+            ss << "                ss << \"\\\"" << field->name << "\\\":\";\n";
+            ss << "                if (PQgetisnull(res, i, colIdx)) {\n";
+            ss << "                    ss << \"null\";\n";
+            ss << "                } else {\n";
+            ss << "                    std::string val = PQgetvalue(res, i, colIdx);\n";
+            if (field->type == DataType::STRING) {
+                ss << "                    ss << \"\\\"\" << val << \"\\\"\";\n";
+            } else if (field->type == DataType::BOOL) {
+                ss << "                    ss << (val == \"t\" || val == \"true\" || val == \"1\" ? \"true\" : \"false\");\n";
+            } else {
+                ss << "                    ss << val;\n";
+            }
+            ss << "                }\n";
+            ss << "            }\n";
+            if (fIdx + 1 < slice->fields.size()) {
+                ss << "            ss << \",\";\n";
+            }
+        }
+        ss << "            ss << \"}\";\n";
+        ss << "        }\n";
+        ss << "        ss << \"]\";\n";
+        ss << "        PQclear(res);\n";
+        ss << "        PQfinish(conn);\n";
+        ss << "        return ss.str();\n";
+    } else if (dbType == "mysql") {
+        ss << "        MYSQL* conn = getMySQLConn();\n";
+        ss << "        if (!conn) return getAllAsJSON_JSONL();\n";
+        ss << "        std::string query = \"SELECT * FROM `" << slice->name << "`;\";\n";
+        ss << "        std::stringstream ss;\n";
+        ss << "        ss << \"[\";\n";
+        ss << "        if (mysql_query(conn, query.c_str()) == 0) {\n";
+        ss << "            MYSQL_RES* result = mysql_store_result(conn);\n";
+        ss << "            if (result) {\n";
+        ss << "                int num_fields = mysql_num_fields(result);\n";
+        ss << "                MYSQL_FIELD* fields = mysql_fetch_fields(result);\n";
+        ss << "                MYSQL_ROW row;\n";
+        ss << "                bool firstRow = true;\n";
+        ss << "                while ((row = mysql_fetch_row(result))) {\n";
+        ss << "                    if (!firstRow) ss << \",\";\n";
+        ss << "                    ss << \"{\";\n";
+        for (size_t fIdx = 0; fIdx < slice->fields.size(); ++fIdx) {
+            const auto& field = slice->fields[fIdx];
+            ss << "                    {\n";
+            ss << "                        int colIdx = -1;\n";
+            ss << "                        for (int k = 0; k < num_fields; ++k) {\n";
+            ss << "                            if (std::string(fields[k].name) == \"" << field->name << "\") { colIdx = k; break; }\n";
+            ss << "                        }\n";
+            ss << "                        ss << \"\\\"" << field->name << "\\\":\";\n";
+            ss << "                        if (colIdx == -1 || row[colIdx] == nullptr) {\n";
+            ss << "                            ss << \"null\";\n";
+            ss << "                        } else {\n";
+            if (field->type == DataType::STRING) {
+                ss << "                            ss << \"\\\"\" << row[colIdx] << \"\\\"\";\n";
+            } else if (field->type == DataType::BOOL) {
+                ss << "                            ss << (std::string(row[colIdx]) == \"1\" || std::string(row[colIdx]) == \"true\" ? \"true\" : \"false\");\n";
+            } else {
+                ss << "                            ss << row[colIdx];\n";
+            }
+            ss << "                        }\n";
+            ss << "                    }\n";
+            if (fIdx + 1 < slice->fields.size()) {
+                ss << "                    ss << \",\";\n";
+            }
+        }
+        ss << "                    ss << \"}\";\n";
+        ss << "                    firstRow = false;\n";
+        ss << "                }\n";
+        ss << "                mysql_free_result(result);\n";
+        ss << "            }\n";
+        ss << "        }\n";
+        ss << "        ss << \"]\";\n";
+        ss << "        mysql_close(conn);\n";
+        ss << "        return ss.str();\n";
+    } else {
+        ss << "        return getAllAsJSON_JSONL();\n";
+    }
+    ss << "    }\n\n";
+
+    ss << "    static void deleteRecord(const std::string& key, const std::string& value) {\n";
+    if (dbType == "sqlite") {
+        ss << "        sqlite3* db = getSQLiteConn();\n";
+        ss << "        if (!db) {\n";
+        ss << "            deleteRecord_JSONL(key, value);\n";
+        ss << "            return;\n";
+        ss << "        }\n";
+        ss << "        std::string query = \"DELETE FROM \\\"" << slice->name << "\\\" WHERE \\\"\" + key + \"\\\" = ?;\";\n";
+        ss << "        sqlite3_stmt* stmt;\n";
+        ss << "        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {\n";
+        ss << "            sqlite3_bind_text(stmt, 1, value.c_str(), -1, SQLITE_TRANSIENT);\n";
+        ss << "            sqlite3_step(stmt);\n";
+        ss << "            sqlite3_finalize(stmt);\n";
+        ss << "        }\n";
+        ss << "        sqlite3_close(db);\n";
+    } else if (dbType == "postgres" || dbType == "postgresql") {
+        ss << "        PGconn* conn = getPGConn();\n";
+        ss << "        if (!conn) {\n";
+        ss << "            deleteRecord_JSONL(key, value);\n";
+        ss << "            return;\n";
+        ss << "        }\n";
+        ss << "        const char* paramValues[1];\n";
+        ss << "        paramValues[0] = value.c_str();\n";
+        ss << "        std::string query = \"DELETE FROM \\\"" << slice->name << "\\\" WHERE \\\"\" + key + \"\\\" = $1;\";\n";
+        ss << "        PGresult* res = PQexecParams(conn, query.c_str(), 1, NULL, paramValues, NULL, NULL, 0);\n";
+        ss << "        PQclear(res);\n";
+        ss << "        PQfinish(conn);\n";
+    } else if (dbType == "mysql") {
+        ss << "        MYSQL* conn = getMySQLConn();\n";
+        ss << "        if (!conn) {\n";
+        ss << "            deleteRecord_JSONL(key, value);\n";
+        ss << "            return;\n";
+        ss << "        }\n";
+        ss << "        MYSQL_STMT* stmt = mysql_stmt_init(conn);\n";
+        ss << "        if (stmt) {\n";
+        ss << "            std::string query = \"DELETE FROM `" << slice->name << "` WHERE `\" + key + \"` = ?\";\n";
+        ss << "            if (mysql_stmt_prepare(stmt, query.c_str(), query.length()) == 0) {\n";
+        ss << "                MYSQL_BIND bind[1];\n";
+        ss << "                std::memset(bind, 0, sizeof(bind));\n";
+        ss << "                bind[0].buffer_type = MYSQL_TYPE_STRING;\n";
+        ss << "                bind[0].buffer = (char*)value.c_str();\n";
+        ss << "                bind[0].buffer_length = value.length();\n";
+        ss << "                mysql_stmt_bind_param(stmt, bind);\n";
+        ss << "                mysql_stmt_execute(stmt);\n";
+        ss << "                mysql_stmt_close(stmt);\n";
+        ss << "            }\n";
+        ss << "        }\n";
+        ss << "        mysql_close(conn);\n";
+    } else {
+        ss << "        deleteRecord_JSONL(key, value);\n";
+    }
     ss << "    }\n\n";
 
     for (const auto& action : slice->actions) {
@@ -429,6 +757,13 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     std::stringstream ss;
     ss << "// Generated automatically by Hexagen Framework\n";
     ss << "// Database Engine: " << program->dbType << "\n";
+    if (program->dbType == "sqlite") {
+        ss << "#include <sqlite3.h>\n";
+    } else if (program->dbType == "postgres" || program->dbType == "postgresql") {
+        ss << "#include <libpq-fe.h>\n";
+    } else if (program->dbType == "mysql") {
+        ss << "#include <mysql/mysql.h>\n";
+    }
     ss << "#include <iostream>\n";
     ss << "#include <string>\n";
     ss << "#include <sstream>\n";
@@ -456,6 +791,211 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "    return json.substr(valStart, valEnd - valStart);\n"
        << "}\n\n";
 
+    // Global environment loader and helpers
+    ss << "// Global environment loader and helpers\n"
+       << "const char* getEnvOr(const char* key, const char* defaultVal) {\n"
+       << "    const char* val = std::getenv(key);\n"
+       << "    return val ? val : defaultVal;\n"
+       << "}\n\n"
+       << "std::string trim(const std::string& str) {\n"
+       << "    size_t first = str.find_first_not_of(\" \\t\\r\\n\");\n"
+       << "    if (first == std::string::npos) return \"\";\n"
+       << "    size_t last = str.find_last_not_of(\" \\t\\r\\n\");\n"
+       << "    return str.substr(first, (last - first + 1));\n"
+       << "}\n\n"
+       << "void loadEnv() {\n"
+       << "    std::ifstream envFile(\".env\");\n"
+       << "    if (!envFile.is_open()) return;\n"
+       << "    std::string line;\n"
+       << "    while (std::getline(envFile, line)) {\n"
+       << "        line = trim(line);\n"
+       << "        if (line.empty() || line[0] == '#') continue;\n"
+       << "        size_t eqPos = line.find('=');\n"
+       << "        if (eqPos == std::string::npos) continue;\n"
+       << "        std::string key = trim(line.substr(0, eqPos));\n"
+       << "        std::string val = trim(line.substr(eqPos + 1));\n"
+       << "        if (val.size() >= 2 && val.front() == '\"' && val.back() == '\"') {\n"
+       << "            val = val.substr(1, val.size() - 2);\n"
+       << "        } else if (val.size() >= 2 && val.front() == '\\'' && val.back() == '\\'') {\n"
+       << "            val = val.substr(1, val.size() - 2);\n"
+       << "        }\n"
+       << "        setenv(key.c_str(), val.c_str(), 1);\n"
+       << "    }\n"
+       << "    envFile.close();\n"
+       << "}\n\n"
+       << "int safeStoi(const std::string& val, int defaultVal = 0) {\n"
+       << "    if (val.empty()) return defaultVal;\n"
+       << "    try {\n"
+       << "        return std::stoi(val);\n"
+       << "    } catch (...) {\n"
+       << "        return defaultVal;\n"
+       << "    }\n"
+       << "}\n\n"
+       << "double safeStod(const std::string& val, double defaultVal = 0.0) {\n"
+       << "    if (val.empty()) return defaultVal;\n"
+       << "    try {\n"
+       << "        return std::stod(val);\n"
+       << "    } catch (...) {\n"
+       << "        return defaultVal;\n"
+       << "    }\n"
+       << "}\n\n"
+       << "std::string readHttpRequest(int client_fd) {\n"
+        << "    std::string req;\n"
+        << "    char buffer[4096];\n"
+        << "    size_t bodyPos = std::string::npos;\n"
+        << "    size_t contentLength = 0;\n"
+        << "    while (true) {\n"
+        << "        int valread = read(client_fd, buffer, sizeof(buffer));\n"
+        << "        if (valread <= 0) break;\n"
+        << "        req.append(buffer, valread);\n"
+        << "        if (bodyPos == std::string::npos) {\n"
+        << "            bodyPos = req.find(\"\\r\\n\\r\\n\");\n"
+        << "            if (bodyPos != std::string::npos) {\n"
+        << "                std::string reqLower = req.substr(0, bodyPos);\n"
+        << "                for (char &c : reqLower) { if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a'; }\n"
+        << "                size_t clPos = reqLower.find(\"content-length:\");\n"
+        << "                if (clPos != std::string::npos) {\n"
+        << "                    size_t valStart = clPos + 15;\n"
+        << "                    while (valStart < reqLower.length() && (reqLower[valStart] == ' ' || reqLower[valStart] == '\\t')) valStart++;\n"
+        << "                    size_t valEnd = req.find_first_of(\"\\r\\n\", valStart);\n"
+        << "                    if (valEnd != std::string::npos) {\n"
+        << "                        try {\n"
+        << "                            contentLength = std::stoul(req.substr(valStart, valEnd - valStart));\n"
+        << "                        } catch (...) {}\n"
+        << "                    }\n"
+        << "                }\n"
+        << "            }\n"
+        << "        }\n"
+        << "        if (bodyPos != std::string::npos) {\n"
+        << "            size_t readBodyBytes = req.length() - (bodyPos + 4);\n"
+        << "            if (readBodyBytes >= contentLength) {\n"
+        << "                break;\n"
+        << "            }\n"
+        << "        }\n"
+        << "    }\n"
+        << "    return req;\n"
+        << "}\n\n";
+
+        // Generate database connections helpers
+    if (program->dbType == "sqlite") {
+        ss << "sqlite3* getSQLiteConn() {\n"
+           << "    std::string dbName = getEnvOr(\"DB_NAME\", \"vortex_db.db\");\n"
+           << "    sqlite3* db = nullptr;\n"
+           << "    int rc = sqlite3_open(dbName.c_str(), &db);\n"
+           << "    if (rc != SQLITE_OK) {\n"
+           << "        std::cerr << \"[SQLite] Can't open database: \" << sqlite3_errmsg(db) << std::endl;\n"
+           << "        if (db) sqlite3_close(db);\n"
+           << "        return nullptr;\n"
+           << "    }\n"
+           << "    return db;\n"
+           << "}\n\n";
+    } else if (program->dbType == "postgres" || program->dbType == "postgresql") {
+        ss << "PGconn* getPGConn() {\n"
+           << "    if (!std::getenv(\"DB_HOST\") && !std::getenv(\"DB_USER\")) return nullptr;\n"
+           << "    std::string conninfo = \"host=\" + std::string(getEnvOr(\"DB_HOST\", \"localhost\")) +\n"
+           << "                           \" port=\" + std::string(getEnvOr(\"DB_PORT\", \"5432\")) +\n"
+           << "                           \" dbname=\" + std::string(getEnvOr(\"DB_NAME\", \"vortex_db\")) +\n"
+           << "                           \" user=\" + std::string(getEnvOr(\"DB_USER\", \"postgres\")) +\n"
+           << "                           \" password=\" + std::string(getEnvOr(\"DB_PASS\", \"\"));\n"
+           << "    PGconn* conn = PQconnectdb(conninfo.c_str());\n"
+           << "    if (PQstatus(conn) != CONNECTION_OK) {\n"
+           << "        std::cerr << \"[PostgreSQL] Connection failed: \" << PQerrorMessage(conn) << std::endl;\n"
+           << "        PQfinish(conn);\n"
+           << "        return nullptr;\n"
+           << "    }\n"
+           << "    return conn;\n"
+           << "}\n\n";
+    } else if (program->dbType == "mysql") {
+        ss << "MYSQL* getMySQLConn() {\n"
+           << "    if (!std::getenv(\"DB_HOST\") && !std::getenv(\"DB_USER\")) return nullptr;\n"
+           << "    MYSQL* conn = mysql_init(nullptr);\n"
+           << "    if (!conn) {\n"
+           << "        std::cerr << \"[MySQL] Initialization failed\" << std::endl;\n"
+           << "        return nullptr;\n"
+           << "    }\n"
+           << "    const char* host = getEnvOr(\"DB_HOST\", \"127.0.0.1\");\n"
+           << "    const char* user = getEnvOr(\"DB_USER\", \"root\");\n"
+           << "    const char* pass = getEnvOr(\"DB_PASS\", \"\");\n"
+           << "    const char* db = getEnvOr(\"DB_NAME\", \"vortex_db\");\n"
+           << "    const char* portStr = getEnvOr(\"DB_PORT\", \"3306\");\n"
+           << "    int port = std::stoi(portStr);\n"
+           << "    if (!mysql_real_connect(conn, host, user, pass, db, port, nullptr, 0)) {\n"
+           << "        std::cerr << \"[MySQL] Connection failed: \" << mysql_error(conn) << std::endl;\n"
+           << "        mysql_close(conn);\n"
+           << "        return nullptr;\n"
+           << "    }\n"
+           << "    return conn;\n"
+           << "}\n\n";
+    }
+
+    // initDatabase()
+    std::string dbType = program->dbType;
+    ss << "void initDatabase() {\n";
+    ss << "    loadEnv();\n";
+    if (dbType == "sqlite") {
+        ss << "    sqlite3* db = getSQLiteConn();\n"
+           << "    if (db) {\n";
+        for (const auto& slice : program->slices) {
+            ss << "        {\n"
+               << "            std::string q = \"CREATE TABLE IF NOT EXISTS \\\"" << slice->name << "\\\" (id INTEGER PRIMARY KEY AUTOINCREMENT";
+            for (const auto& field : slice->fields) {
+                ss << ", \\\"" << field->name << "\\\" ";
+                if (field->type == DataType::INT) ss << "INTEGER";
+                else if (field->type == DataType::FLOAT) ss << "REAL";
+                else if (field->type == DataType::BOOL) ss << "INTEGER";
+                else ss << "TEXT";
+            }
+            ss << ");\";\n"
+               << "            char* errMsg = nullptr;\n"
+               << "            sqlite3_exec(db, q.c_str(), nullptr, nullptr, &errMsg);\n"
+               << "        }\n";
+        }
+        ss << "        sqlite3_close(db);\n"
+           << "    }\n";
+    } else if (dbType == "postgres" || dbType == "postgresql") {
+        ss << "    PGconn* conn = getPGConn();\n"
+           << "    if (conn) {\n";
+        for (const auto& slice : program->slices) {
+            ss << "        {\n"
+               << "            std::string q = \"CREATE TABLE IF NOT EXISTS \\\"" << slice->name << "\\\" (id SERIAL PRIMARY KEY";
+            for (const auto& field : slice->fields) {
+                ss << ", \\\"" << field->name << "\\\" ";
+                if (field->type == DataType::INT) ss << "INT";
+                else if (field->type == DataType::FLOAT) ss << "REAL";
+                else if (field->type == DataType::BOOL) ss << "BOOLEAN";
+                else ss << "VARCHAR(255)";
+            }
+            ss << ");\";\n"
+               << "            PGresult* res = PQexec(conn, q.c_str());\n"
+               << "            PQclear(res);\n"
+               << "        }\n";
+        }
+        ss << "        PQfinish(conn);\n"
+           << "    }\n";
+    } else if (dbType == "mysql") {
+        ss << "    MYSQL* conn = getMySQLConn();\n"
+           << "    if (conn) {\n";
+        for (const auto& slice : program->slices) {
+            ss << "        {\n"
+               << "            std::string q = \"CREATE TABLE IF NOT EXISTS `" << slice->name << "` (id INT AUTO_INCREMENT PRIMARY KEY";
+            for (const auto& field : slice->fields) {
+                ss << ", `" << field->name << "` ";
+                if (field->type == DataType::INT) ss << "INT";
+                else if (field->type == DataType::FLOAT) ss << "DOUBLE";
+                else if (field->type == DataType::BOOL) ss << "TINYINT(1)";
+                else ss << "VARCHAR(255)";
+            }
+            ss << ");\";\n"
+               << "            mysql_query(conn, q.c_str());\n"
+               << "        }\n";
+        }
+        ss << "        mysql_close(conn);\n"
+           << "    }\n";
+    } else {
+        ss << "    // No init needed for JSONL\n";
+    }
+    ss << "}\n\n";
+
     for (const auto& slice : program->slices) {
         ss << generateSlice(slice) << "\n";
     }
@@ -475,6 +1015,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
 
     if (includeMain) {
         ss << "int main() {\n";
+        ss << "    initDatabase();\n";
         ss << "    int server_fd, client_fd;\n";
         ss << "    struct sockaddr_in address;\n";
         ss << "    int opt = 1;\n";
@@ -494,11 +1035,8 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         
         ss << "    while (true) {\n";
         ss << "        if ((client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) continue;\n";
-        ss << "        char buffer[8192] = {0};\n";
-        ss << "        int valread = read(client_fd, buffer, 8192);\n";
-        ss << "        if (valread > 0) {\n";
-        ss << "            std::string req(buffer, valread);\n";
-        
+                ss << "        std::string req = readHttpRequest(client_fd);\n";
+        ss << "        if (!req.empty()) {\n";        
         // Dynamic multi-view routing
         bool isFirstRoute = true;
         if (program->views.empty()) {
@@ -607,12 +1145,12 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                             if (slice->name == sliceName) {
                                 for (const auto& field : slice->fields) {
                                     ss << "                instance." << field->name << " = ";
-                                    if (field->type == DataType::INT) {
-                                        ss << "std::stoi(getJSONVal(body, \"" << field->name << "\"));\n";
+                                                                        if (field->type == DataType::INT) {
+                                        ss << "safeStoi(getJSONVal(body, \"" << field->name << "\"));\n";
                                     } else if (field->type == DataType::STRING) {
                                         ss << "getJSONVal(body, \"" << field->name << "\");\n";
                                     } else if (field->type == DataType::FLOAT) {
-                                        ss << "std::stof(getJSONVal(body, \"" << field->name << "\"));\n";
+                                        ss << "safeStod(getJSONVal(body, \"" << field->name << "\"));\n";
                                     } else if (field->type == DataType::BOOL) {
                                         ss << "(getJSONVal(body, \"" << field->name << "\") == \"true\");\n";
                                     }

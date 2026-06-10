@@ -168,13 +168,35 @@ int main(int argc, char* argv[]) {
             std::string outputExe = "./temp_dev_server";
             std::string tempCppFile = "temp_codegen.cpp";
             int serverPid = 0;
+            std::string currentDbType = "jsonl";
 
             auto startServer = [&]() {
-                std::string compileCmd = "g++ -std=c++17 " + tempCppFile + " -o " + outputExe + " -pthread";
+                std::string dbFlags = "";
+                if (currentDbType == "sqlite") dbFlags = " -lsqlite3";
+                else if (currentDbType == "postgres" || currentDbType == "postgresql") dbFlags = " -lpq";
+                else if (currentDbType == "mysql") dbFlags = " -lmysqlclient";
+
+                std::string compileCmd = "g++ -std=c++17 " + tempCppFile + " -o " + outputExe + " -pthread" + dbFlags;
                 std::cout << "[Hexagen Dev] Compiling..." << std::endl;
                 int res = std::system(compileCmd.c_str());
                 if (res != 0) {
-                    std::cerr << "❌ Compile failed. Fix errors in '" << inputFile << "' to trigger reload." << std::endl;
+                    std::cerr << "❌ Compile failed. Fix errors in '" << inputFile << "' or missing dependencies to trigger reload." << std::endl;
+                    if (currentDbType == "postgres" || currentDbType == "postgresql") {
+                        std::cerr << "\n💡 Tip: It looks like you are using PostgreSQL. Please ensure PostgreSQL development headers are installed:\n"
+                                  << "   - Ubuntu/Debian: sudo apt-get install libpq-dev\n"
+                                  << "   - Fedora/RHEL:   sudo dnf install postgresql-devel\n"
+                                  << "   - macOS:         brew install postgresql\n" << std::endl;
+                    } else if (currentDbType == "mysql") {
+                        std::cerr << "\n💡 Tip: It looks like you are using MySQL. Please ensure MySQL development headers are installed:\n"
+                                  << "   - Ubuntu/Debian: sudo apt-get install default-libmysqlclient-dev\n"
+                                  << "   - Fedora/RHEL:   sudo dnf install mysql-devel\n"
+                                  << "   - macOS:         brew install mysql-client\n" << std::endl;
+                    } else if (currentDbType == "sqlite") {
+                        std::cerr << "\n💡 Tip: It looks like you are using SQLite. Please ensure SQLite3 development headers are installed:\n"
+                                  << "   - Ubuntu/Debian: sudo apt-get install libsqlite3-dev\n"
+                                  << "   - Fedora/RHEL:   sudo dnf install sqlite-devel\n"
+                                  << "   - macOS:         brew install sqlite\n" << std::endl;
+                    }
                     return false;
                 }
                 
@@ -213,6 +235,7 @@ int main(int argc, char* argv[]) {
 
                     CodeGenerator codegen(program);
                     std::string cppCode = codegen.generateSourceCode(true);
+                    currentDbType = program->dbType;
 
                     std::ofstream tempFile(tempCppFile);
                     if (!tempFile.is_open()) {
@@ -295,7 +318,12 @@ int main(int argc, char* argv[]) {
             tempFile << cppCode;
             tempFile.close();
 
-            std::string compileCmd = "g++ -std=c++17 " + tempCppFile + " -o " + outputExe + " -pthread";
+            std::string dbFlags = "";
+            if (program->dbType == "sqlite") dbFlags = " -lsqlite3";
+            else if (program->dbType == "postgres" || program->dbType == "postgresql") dbFlags = " -lpq";
+            else if (program->dbType == "mysql") dbFlags = " -lmysqlclient";
+
+            std::string compileCmd = "g++ -std=c++17 " + tempCppFile + " -o " + outputExe + " -pthread" + dbFlags;
             std::cout << "[Hexagen] Compiling generated C++ code: " << compileCmd << "\n";
             int compileResult = std::system(compileCmd.c_str());
 
@@ -303,6 +331,22 @@ int main(int argc, char* argv[]) {
 
             if (compileResult != 0) {
                 std::cerr << "Error: C++ compilation failed.\n";
+                if (program->dbType == "postgres" || program->dbType == "postgresql") {
+                    std::cerr << "\n💡 Tip: It looks like you are using PostgreSQL. Please ensure PostgreSQL development headers are installed:\n"
+                              << "   - Ubuntu/Debian: sudo apt-get install libpq-dev\n"
+                              << "   - Fedora/RHEL:   sudo dnf install postgresql-devel\n"
+                              << "   - macOS:         brew install postgresql\n" << std::endl;
+                } else if (program->dbType == "mysql") {
+                    std::cerr << "\n💡 Tip: It looks like you are using MySQL. Please ensure MySQL development headers are installed:\n"
+                              << "   - Ubuntu/Debian: sudo apt-get install default-libmysqlclient-dev\n"
+                              << "   - Fedora/RHEL:   sudo dnf install mysql-devel\n"
+                              << "   - macOS:         brew install mysql-client\n" << std::endl;
+                } else if (program->dbType == "sqlite") {
+                    std::cerr << "\n💡 Tip: It looks like you are using SQLite. Please ensure SQLite3 development headers are installed:\n"
+                              << "   - Ubuntu/Debian: sudo apt-get install libsqlite3-dev\n"
+                              << "   - Fedora/RHEL:   sudo dnf install sqlite-devel\n"
+                              << "   - macOS:         brew install sqlite\n" << std::endl;
+                }
                 return compileResult;
             }
 

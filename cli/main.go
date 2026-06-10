@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -221,12 +222,36 @@ func handleDev(inputPath string) {
 
 		// 2. Compile generated C++
 		fmt.Println("[Hexagen Dev] Compiling...")
-		compileCmd := exec.Command("g++", "-std=c++17", tempCppFile, "-o", outputExe, "-pthread")
+		compileArgs := []string{"-std=c++17", tempCppFile, "-o", outputExe, "-pthread"}
+		if strings.Contains(cppCode, "Database Engine: sqlite") {
+			compileArgs = append(compileArgs, "-lsqlite3")
+		} else if strings.Contains(cppCode, "Database Engine: postgres") || strings.Contains(cppCode, "Database Engine: postgresql") {
+			compileArgs = append(compileArgs, "-lpq")
+		} else if strings.Contains(cppCode, "Database Engine: mysql") {
+			compileArgs = append(compileArgs, "-lmysqlclient")
+		}
+		compileCmd := exec.Command("g++", compileArgs...)
 		compileCmd.Stdout = os.Stdout
 		compileCmd.Stderr = os.Stderr
 		err = compileCmd.Run()
 		if err != nil {
-			fmt.Println("❌ Compilation failed. Fix syntax errors to reload.")
+			fmt.Println("❌ Compilation failed. Fix syntax errors or missing dependencies to reload.")
+			if strings.Contains(cppCode, "Database Engine: postgres") || strings.Contains(cppCode, "Database Engine: postgresql") {
+				fmt.Println("\n💡 Tip: It looks like you are using PostgreSQL. Please ensure PostgreSQL development headers are installed:")
+				fmt.Println("   - Ubuntu/Debian: sudo apt-get install libpq-dev")
+				fmt.Println("   - Fedora/RHEL:   sudo dnf install postgresql-devel")
+				fmt.Println("   - macOS:         brew install postgresql")
+			} else if strings.Contains(cppCode, "Database Engine: mysql") {
+				fmt.Println("\n💡 Tip: It looks like you are using MySQL. Please ensure MySQL development headers are installed:")
+				fmt.Println("   - Ubuntu/Debian: sudo apt-get install default-libmysqlclient-dev")
+				fmt.Println("   - Fedora/RHEL:   sudo dnf install mysql-devel")
+				fmt.Println("   - macOS:         brew install mysql-client")
+			} else if strings.Contains(cppCode, "Database Engine: sqlite") {
+				fmt.Println("\n💡 Tip: It looks like you are using SQLite. Please ensure SQLite3 development headers are installed:")
+				fmt.Println("   - Ubuntu/Debian: sudo apt-get install libsqlite3-dev")
+				fmt.Println("   - Fedora/RHEL:   sudo dnf install sqlite-devel")
+				fmt.Println("   - macOS:         brew install sqlite")
+			}
 			return false
 		}
 
@@ -368,12 +393,36 @@ func main() {
 
 		// Compile
 		fmt.Printf("[Hexagen] Compiling generated C++ code to: %s\n", outputExe)
-		compileCmd := exec.Command("g++", "-std=c++17", tempCppFile, "-o", outputExe, "-pthread")
+		compileArgs := []string{"-std=c++17", tempCppFile, "-o", outputExe, "-pthread"}
+		if strings.Contains(cppCode, "Database Engine: sqlite") {
+			compileArgs = append(compileArgs, "-lsqlite3")
+		} else if strings.Contains(cppCode, "Database Engine: postgres") || strings.Contains(cppCode, "Database Engine: postgresql") {
+			compileArgs = append(compileArgs, "-lpq")
+		} else if strings.Contains(cppCode, "Database Engine: mysql") {
+			compileArgs = append(compileArgs, "-lmysqlclient")
+		}
+		compileCmd := exec.Command("g++", compileArgs...)
 		compileCmd.Stdout = os.Stdout
 		compileCmd.Stderr = os.Stderr
 		err = compileCmd.Run()
 		if err != nil {
-			fmt.Println("Error: C++ compilation failed.")
+			fmt.Println("❌ Error: C++ compilation failed.")
+			if strings.Contains(cppCode, "Database Engine: postgres") || strings.Contains(cppCode, "Database Engine: postgresql") {
+				fmt.Println("\n💡 Tip: It looks like you are using PostgreSQL. Please ensure PostgreSQL development headers are installed:")
+				fmt.Println("   - Ubuntu/Debian: sudo apt-get install libpq-dev")
+				fmt.Println("   - Fedora/RHEL:   sudo dnf install postgresql-devel")
+				fmt.Println("   - macOS:         brew install postgresql")
+			} else if strings.Contains(cppCode, "Database Engine: mysql") {
+				fmt.Println("\n💡 Tip: It looks like you are using MySQL. Please ensure MySQL development headers are installed:")
+				fmt.Println("   - Ubuntu/Debian: sudo apt-get install default-libmysqlclient-dev")
+				fmt.Println("   - Fedora/RHEL:   sudo dnf install mysql-devel")
+				fmt.Println("   - macOS:         brew install mysql-client")
+			} else if strings.Contains(cppCode, "Database Engine: sqlite") {
+				fmt.Println("\n💡 Tip: It looks like you are using SQLite. Please ensure SQLite3 development headers are installed:")
+				fmt.Println("   - Ubuntu/Debian: sudo apt-get install libsqlite3-dev")
+				fmt.Println("   - Fedora/RHEL:   sudo dnf install sqlite-devel")
+				fmt.Println("   - macOS:         brew install sqlite")
+			}
 			os.Exit(1)
 		}
 

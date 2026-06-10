@@ -41,8 +41,9 @@ Hexagen supports configuring your database engine globally using the `config` bl
 
 ### Supported Engines
 *   `jsonl` (Default): Local plain-text JSON Lines file. Great for zero-dependency portability.
-*   `sqlite` (Planned): Embedded relational database.
-*   `postgres` / `mysql` (Planned): Remote database engines.
+*   `sqlite`: Local embedded SQLite relational database. Automatically creates/maps table structures.
+*   `postgres` / `postgresql`: Remote PostgreSQL relational database engine.
+*   `mysql`: Remote MySQL / MariaDB relational database engine.
 
 ### How to Configure
 1.  **Define the Engine in your `.hx` file:**
@@ -66,7 +67,22 @@ Hexagen supports configuring your database engine globally using the `config` bl
     DB_NAME=vortex_db
     ```
 3.  **Local Dev Fallback:**
-    If no database credentials are found in the system, the compiled server automatically falls back to local JSONL/SQLite storage to keep development frictionless and out-of-the-box.
+    If no database credentials are found in the system or `.env` file at runtime, the compiled server automatically falls back to local JSONL storage to keep development frictionless and out-of-the-box.
+
+### 🛠️ Compilation and Linker Requirements
+When compiling `.hx` files using a database engine other than `jsonl`, ensure you have the corresponding development headers installed on your system. Hexagen will automatically link the correct libraries (`-lsqlite3`, `-lpq`, or `-lmysqlclient`):
+*   **PostgreSQL**: Requires `libpq` development headers.
+    *   Ubuntu/Debian: `sudo apt-get install libpq-dev`
+    *   Fedora/RHEL: `sudo dnf install postgresql-devel`
+    *   macOS: `brew install postgresql`
+*   **MySQL/MariaDB**: Requires `mysqlclient` development headers.
+    *   Ubuntu/Debian: `sudo apt-get install default-libmysqlclient-dev`
+    *   Fedora/RHEL: `sudo dnf install mysql-devel` (or `mariadb-devel`)
+    *   macOS: `brew install mysql-client`
+*   **SQLite**: Requires `sqlite3` development headers.
+    *   Ubuntu/Debian: `sudo apt-get install libsqlite3-dev`
+    *   Fedora/RHEL: `sudo dnf install sqlite-devel`
+    *   macOS: `brew install sqlite`
 
 ---
 

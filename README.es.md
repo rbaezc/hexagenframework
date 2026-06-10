@@ -41,8 +41,9 @@ Hexagen admite configurar tu motor de base de datos de forma global usando el bl
 
 ### Motores Soportados
 *   `jsonl` (Por defecto): Archivo plano local JSON Lines. Ideal para portabilidad sin dependencias.
-*   `sqlite` (Planificado): Base de datos relacional integrada en el binario.
-*   `postgres` / `mysql` (Planificado): Conectores para bases de datos relacionales en red.
+*   `sqlite`: Base de datos relacional SQLite integrada de forma local. Crea y mapea estructuras automáticamente.
+*   `postgres` / `postgresql`: Conector para base de datos relacional PostgreSQL en red.
+*   `mysql`: Conector para base de datos relacional MySQL / MariaDB en red.
 
 ### Cómo Configurar
 1.  **Define el motor en tu archivo `.hx`:**
@@ -66,7 +67,22 @@ Hexagen admite configurar tu motor de base de datos de forma global usando el bl
     DB_NAME=vortex_db
     ```
 3.  **Fallback Local en Desarrollo:**
-    Si el servidor compilado no encuentra credenciales de conexión en el sistema o archivo `.env`, retornará automáticamente a almacenamiento local basado en JSONL/SQLite para mantener el flujo de desarrollo ágil y sin dependencias externas.
+    Si el servidor compilado no encuentra credenciales de conexión en el sistema o en el archivo `.env` en tiempo de ejecución, retornará automáticamente a almacenamiento local basado en JSONL para mantener el flujo de desarrollo ágil y sin dependencias.
+
+### 🛠️ Requisitos de Compilación y Enlace
+Al compilar archivos `.hx` usando un motor de base de datos distinto de `jsonl`, asegúrate de tener las cabeceras de desarrollo correspondientes instaladas en tu sistema. Hexagen enlazará automáticamente las bibliotecas correctas (`-lsqlite3`, `-lpq` o `-lmysqlclient`):
+*   **PostgreSQL**: Requiere las cabeceras de desarrollo de `libpq`.
+    *   Ubuntu/Debian: `sudo apt-get install libpq-dev`
+    *   Fedora/RHEL: `sudo dnf install postgresql-devel`
+    *   macOS: `brew install postgresql`
+*   **MySQL/MariaDB**: Requiere las cabeceras de desarrollo de `mysqlclient`.
+    *   Ubuntu/Debian: `sudo apt-get install default-libmysqlclient-dev`
+    *   Fedora/RHEL: `sudo dnf install mysql-devel` (o `mariadb-devel`)
+    *   macOS: `brew install mysql-client`
+*   **SQLite**: Requiere las cabeceras de desarrollo de `sqlite3`.
+    *   Ubuntu/Debian: `sudo apt-get install libsqlite3-dev`
+    *   Fedora/RHEL: `sudo dnf install sqlite-devel`
+    *   macOS: `brew install sqlite`
 
 ---
 
