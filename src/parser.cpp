@@ -142,8 +142,15 @@ std::shared_ptr<ASTStatement> Parser::parseStatement() {
             auto expr = parseExpression();
             return std::make_shared<ASTAssignmentStatement>(name, expr);
         } else if (match(TokenType::LPAREN)) {
+            std::vector<std::shared_ptr<ASTExpression>> args;
+            if (!check(TokenType::RPAREN)) {
+                args.push_back(parseExpression());
+                while (match(TokenType::COMMA)) {
+                    args.push_back(parseExpression());
+                }
+            }
             consume(TokenType::RPAREN, "Expected ')' after action call");
-            return std::make_shared<ASTCallStatement>(name);
+            return std::make_shared<ASTCallStatement>(name, args);
         } else {
             throw std::runtime_error("Expected '=' or '(' after identifier '" + name + "' at line " + std::to_string(nameTok.line));
         }

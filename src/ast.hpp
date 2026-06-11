@@ -147,11 +147,17 @@ public:
 class ASTCallStatement : public ASTStatement {
 public:
     std::string actionName;
+    std::vector<std::shared_ptr<ASTExpression>> arguments;
 
-    ASTCallStatement(std::string name) : actionName(name) {}
+    ASTCallStatement(std::string name, std::vector<std::shared_ptr<ASTExpression>> args = {})
+        : actionName(name), arguments(args) {}
 
     void print(int indent = 0) const override {
-        std::cout << std::string(indent, ' ') << "CallStatement: " << actionName << "()\n";
+        std::cout << std::string(indent, ' ') << "CallStatement: " << actionName << "(\n";
+        for (const auto& arg : arguments) {
+            arg->print(indent + 2);
+        }
+        std::cout << std::string(indent, ' ') << ")\n";
     }
 };
 

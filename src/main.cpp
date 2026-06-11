@@ -1,6 +1,7 @@
 #include "lexer.hpp"
 #include "parser.hpp"
 #include "codegen.hpp"
+#include "security_analyzer.hpp"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -230,8 +231,16 @@ int main(int argc, char* argv[]) {
                     Lexer lexer(src);
                     auto tokens = lexer.tokenize();
 
+                    // Run token-based security checks before parsing
+                    SecurityAnalyzer::checkObfuscation(tokens);
+                    SecurityAnalyzer::checkSandboxing(tokens);
+
                     Parser parser(tokens);
                     auto program = parser.parse();
+
+                    // Run AST-based security checks
+                    SecurityAnalyzer analyzer(program, tokens);
+                    analyzer.analyzeAST();
 
                     CodeGenerator codegen(program);
                     std::string cppCode = codegen.generateSourceCode(true);
@@ -280,6 +289,10 @@ int main(int argc, char* argv[]) {
         Lexer lexer(source);
         auto tokens = lexer.tokenize();
 
+        // Run token-based security checks before parsing
+        SecurityAnalyzer::checkObfuscation(tokens);
+        SecurityAnalyzer::checkSandboxing(tokens);
+
         Parser parser(tokens);
         auto program = parser.parse();
 
@@ -287,6 +300,10 @@ int main(int argc, char* argv[]) {
             program->print();
             return 0;
         }
+
+        // Run AST-based security checks
+        SecurityAnalyzer analyzer(program, tokens);
+        analyzer.analyzeAST();
 
         CodeGenerator codegen(program);
         std::string cppCode = codegen.generateSourceCode(true);

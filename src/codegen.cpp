@@ -45,7 +45,12 @@ std::string CodeGenerator::generateStatement(std::shared_ptr<ASTStatement> stmt)
         }
         ss << "        }\n";
     } else if (auto callStmt = std::dynamic_pointer_cast<ASTCallStatement>(stmt)) {
-        ss << "        " << callStmt->actionName << "();\n";
+        ss << "        " << callStmt->actionName << "(";
+        for (size_t i = 0; i < callStmt->arguments.size(); ++i) {
+            ss << generateExpression(callStmt->arguments[i]);
+            if (i + 1 < callStmt->arguments.size()) ss << ", ";
+        }
+        ss << ");\n";
     }
     return ss.str();
 }

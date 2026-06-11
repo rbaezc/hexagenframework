@@ -9,4 +9,5 @@ add_executable(hf
     src/lexer.cpp
     src/parser.cpp
     src/codegen.cpp
+    src/security_analyzer.cpp
 )
