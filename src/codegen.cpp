@@ -50,6 +50,50 @@ std::string CodeGenerator::generateStatement(std::shared_ptr<ASTStatement> stmt)
     return ss.str();
 }
 
+static std::shared_ptr<ASTSlice> findUserSlice(const std::shared_ptr<ASTProgram>& program) {
+    for (const auto& slice : program->slices) {
+        std::string nameLower = slice->name;
+        std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
+        if (nameLower == "usuario" || nameLower == "user") {
+            return slice;
+        }
+    }
+    return nullptr;
+}
+
+static std::string getEmailFieldName(const std::shared_ptr<ASTSlice>& slice) {
+    for (const auto& field : slice->fields) {
+        std::string nameLower = field->name;
+        std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
+        if (nameLower == "email" || nameLower == "correo" || nameLower == "username" || nameLower == "usuario") {
+            return field->name;
+        }
+    }
+    return "";
+}
+
+static std::string getPasswordFieldName(const std::shared_ptr<ASTSlice>& slice) {
+    for (const auto& field : slice->fields) {
+        std::string nameLower = field->name;
+        std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
+        if (nameLower == "contrasena" || nameLower == "password" || nameLower == "clave" || nameLower == "pass") {
+            return field->name;
+        }
+    }
+    return "";
+}
+
+static std::string getRoleFieldName(const std::shared_ptr<ASTSlice>& slice) {
+    for (const auto& field : slice->fields) {
+        std::string nameLower = field->name;
+        std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
+        if (nameLower == "rol" || nameLower == "role") {
+            return field->name;
+        }
+    }
+    return "";
+}
+
 std::string CodeGenerator::generateField(std::shared_ptr<ASTField> field) {
     std::stringstream ss;
     ss << "    " << dataTypeToString(field->type) << " " << field->name << ";\n";
@@ -612,6 +656,152 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     }
     ss << "    }\n\n";
 
+    // Inject findUser/findUser_JSONL if slice is Usuario or User
+    {
+        std::string nameLower = slice->name;
+        std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
+        if (nameLower == "usuario" || nameLower == "user") {
+            std::string emailField = getEmailFieldName(slice);
+            std::string passwordField = getPasswordFieldName(slice);
+            if (!emailField.empty() && !passwordField.empty()) {
+                // Generate findUser_JSONL
+                ss << "    static bool findUser_JSONL(const std::string& emailVal, " << slice->name << "& user) {\n";
+                ss << "        std::ifstream infile(\"db_" << slice->name << ".jsonl\");\n";
+                ss << "        if (infile.is_open()) {\n";
+                ss << "            std::string line;\n";
+                ss << "            while (std::getline(infile, line)) {\n";
+                ss << "                if (line.empty()) continue;\n";
+                ss << "                if (getJSONVal(line, \"" << emailField << "\") == emailVal) {\n";
+                for (const auto& f : slice->fields) {
+                    if (f->type == DataType::STRING) {
+                        ss << "                    user." << f->name << " = getJSONVal(line, \"" << f->name << "\");\n";
+                    } else if (f->type == DataType::INT || f->type == DataType::RELATION) {
+                        ss << "                    user." << f->name << " = safeStoi(getJSONVal(line, \"" << f->name << "\"));\n";
+                    } else if (f->type == DataType::FLOAT) {
+                        ss << "                    user." << f->name << " = safeStod(getJSONVal(line, \"" << f->name << "\"));\n";
+                    } else if (f->type == DataType::BOOL) {
+                        ss << "                    user." << f->name << " = (getJSONVal(line, \"" << f->name << "\") == \"true\");\n";
+                    }
+                }
+                ss << "                    infile.close();\n";
+                ss << "                    return true;\n";
+                ss << "                }\n";
+                ss << "            }\n";
+                ss << "            infile.close();\n";
+                ss << "        }\n";
+                ss << "        return false;\n";
+                ss << "    }\n\n";
+
+                // Generate findUser
+                ss << "    static bool findUser(const std::string& emailVal, " << slice->name << "& user) {\n";
+                if (dbType == "sqlite") {
+                    ss << "        sqlite3* db = getSQLiteConn();\n";
+                    ss << "        if (!db) return findUser_JSONL(emailVal, user);\n";
+                    ss << "        std::string query = \"SELECT * FROM \\\"" << slice->name << "\\\" WHERE \\\"" << emailField << "\\\" = ?;\";\n";
+                    ss << "        sqlite3_stmt* stmt;\n";
+                    ss << "        bool found = false;\n";
+                    ss << "        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {\n";
+                    ss << "            sqlite3_bind_text(stmt, 1, emailVal.c_str(), -1, SQLITE_TRANSIENT);\n";
+                    ss << "            if (sqlite3_step(stmt) == SQLITE_ROW) {\n";
+                    for (size_t i = 0; i < slice->fields.size(); ++i) {
+                        const auto& f = slice->fields[i];
+                        int colIdx = i + 1; // 0 is id
+                        if (f->type == DataType::STRING) {
+                            ss << "                user." << f->name << " = (const char*)sqlite3_column_text(stmt, " << colIdx << ");\n";
+                        } else if (f->type == DataType::INT || f->type == DataType::RELATION) {
+                            ss << "                user." << f->name << " = sqlite3_column_int(stmt, " << colIdx << ");\n";
+                        } else if (f->type == DataType::FLOAT) {
+                            ss << "                user." << f->name << " = sqlite3_column_double(stmt, " << colIdx << ");\n";
+                        } else if (f->type == DataType::BOOL) {
+                            ss << "                user." << f->name << " = (sqlite3_column_int(stmt, " << colIdx << ") != 0);\n";
+                        }
+                    }
+                    ss << "                found = true;\n";
+                    ss << "            }\n";
+                    ss << "            sqlite3_finalize(stmt);\n";
+                    ss << "        }\n";
+                    ss << "        sqlite3_close(db);\n";
+                    ss << "        return found;\n";
+                } else if (dbType == "postgres" || dbType == "postgresql") {
+                    ss << "        PGconn* conn = getPGConn();\n";
+                    ss << "        if (!conn) return findUser_JSONL(emailVal, user);\n";
+                    ss << "        const char* paramValues[1];\n";
+                    ss << "        paramValues[0] = emailVal.c_str();\n";
+                    ss << "        std::string query = \"SELECT * FROM \\\"" << slice->name << "\\\" WHERE \\\"" << emailField << "\\\" = $1;\";\n";
+                    ss << "        PGresult* res = PQexecParams(conn, query.c_str(), 1, NULL, paramValues, NULL, NULL, 0);\n";
+                    ss << "        bool found = false;\n";
+                    ss << "        if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) > 0) {\n";
+                    for (size_t i = 0; i < slice->fields.size(); ++i) {
+                        const auto& f = slice->fields[i];
+                        ss << "            {\n";
+                        ss << "                int colIdx = PQfnumber(res, \"" << f->name << "\");\n";
+                        ss << "                if (!PQgetisnull(res, 0, colIdx)) {\n";
+                        ss << "                    std::string val = PQgetvalue(res, 0, colIdx);\n";
+                        if (f->type == DataType::STRING) {
+                            ss << "                    user." << f->name << " = val;\n";
+                        } else if (f->type == DataType::INT || f->type == DataType::RELATION) {
+                            ss << "                    user." << f->name << " = safeStoi(val);\n";
+                        } else if (f->type == DataType::FLOAT) {
+                            ss << "                    user." << f->name << " = safeStod(val);\n";
+                        } else if (f->type == DataType::BOOL) {
+                            ss << "                    user." << f->name << " = (val == \"t\" || val == \"true\" || val == \"1\");\n";
+                        }
+                        ss << "                }\n";
+                        ss << "            }\n";
+                    }
+                    ss << "            found = true;\n";
+                    ss << "        }\n";
+                    ss << "        PQclear(res);\n";
+                    ss << "        PQfinish(conn);\n";
+                    ss << "        return found;\n";
+                } else if (dbType == "mysql") {
+                    ss << "        MYSQL* conn = getMySQLConn();\n";
+                    ss << "        if (!conn) return findUser_JSONL(emailVal, user);\n";
+                    ss << "        char* escaped = new char[emailVal.length() * 2 + 1];\n";
+                    ss << "        mysql_real_escape_string(conn, escaped, emailVal.c_str(), emailVal.length());\n";
+                    ss << "        std::string query = \"SELECT * FROM `\" + std::string(\"" << slice->name << "\") + \"` WHERE `\" + std::string(\"" << emailField << "\") + \"` = '\" + std::string(escaped) + \"';\";\n";
+                    ss << "        delete[] escaped;\n";
+                    ss << "        bool found = false;\n";
+                    ss << "        if (mysql_query(conn, query.c_str()) == 0) {\n";
+                    ss << "            MYSQL_RES* result = mysql_store_result(conn);\n";
+                    ss << "            if (result && mysql_num_rows(result) > 0) {\n";
+                    ss << "                MYSQL_ROW row = mysql_fetch_row(result);\n";
+                    ss << "                int num_fields = mysql_num_fields(result);\n";
+                    ss << "                MYSQL_FIELD* fields = mysql_fetch_fields(result);\n";
+                    for (size_t i = 0; i < slice->fields.size(); ++i) {
+                        const auto& f = slice->fields[i];
+                        ss << "                {\n";
+                        ss << "                    int colIdx = -1;\n";
+                        ss << "                    for (int k = 0; k < num_fields; ++k) {\n";
+                        ss << "                        if (std::string(fields[k].name) == \"" << f->name << "\") { colIdx = k; break; }\n";
+                        ss << "                    }\n";
+                        ss << "                    if (colIdx != -1 && row[colIdx] != nullptr) {\n";
+                        if (f->type == DataType::STRING) {
+                            ss << "                        user." << f->name << " = row[colIdx];\n";
+                        } else if (f->type == DataType::INT || f->type == DataType::RELATION) {
+                            ss << "                        user." << f->name << " = safeStoi(row[colIdx]);\n";
+                        } else if (f->type == DataType::FLOAT) {
+                            ss << "                        user." << f->name << " = safeStod(row[colIdx]);\n";
+                        } else if (f->type == DataType::BOOL) {
+                            ss << "                        user." << f->name << " = (std::string(row[colIdx]) == \"1\" || std::string(row[colIdx]) == \"true\");\n";
+                        }
+                        ss << "                    }\n";
+                        ss << "                }\n";
+                    }
+                    ss << "                found = true;\n";
+                    ss << "                mysql_free_result(result);\n";
+                    ss << "            }\n";
+                    ss << "        }\n";
+                    ss << "        mysql_close(conn);\n";
+                    ss << "        return found;\n";
+                } else {
+                    ss << "        return findUser_JSONL(emailVal, user);\n";
+                }
+                ss << "    }\n\n";
+            }
+        }
+    }
+
     for (const auto& action : slice->actions) {
         ss << generateAction(action);
     }
@@ -848,7 +1038,7 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
     ss << "                    method: 'DELETE',\n";
     ss << "                    headers: {\n";
     ss << "                        'Content-Type': 'application/json',\n";
-    ss << "                        'Authorization': 'Bearer hexagen_token_123'\n";
+    ss << "                        'Authorization': 'Bearer ' + (localStorage.getItem('hexagen_token') || 'hexagen_token_123')\n";
     ss << "                    },\n";
     ss << "                    body: JSON.stringify(payload)\n";
     ss << "                });\n";
@@ -871,7 +1061,7 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
        << "                    method: 'POST',\n"
        << "                    headers: { \n"
        << "                        'Content-Type': 'application/json',\n"
-       << "                        'Authorization': 'Bearer hexagen_token_123'\n"
+       << "                        'Authorization': 'Bearer ' + (localStorage.getItem('hexagen_token') || 'hexagen_token_123')\n"
        << "                    },\n"
        << "                    body: JSON.stringify(payload)\n"
        << "                });\n"
@@ -914,7 +1104,8 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     ss << "#include <netinet/in.h>\n";
     ss << "#include <unistd.h>\n";
     ss << "#include <cstring>\n";
-    ss << "#include <fstream>\n\n";
+    ss << "#include <fstream>\n";
+    ss << "#include <iomanip>\n\n";
 
     ss << "// Simple JSON parser helpers\n"
        << "std::string getJSONVal(const std::string& json, const std::string& field) {\n"
@@ -1008,6 +1199,170 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "    } catch (...) {\n"
        << "        return defaultVal;\n"
        << "    }\n"
+       << "}\n\n"
+       << "std::string sha256(const std::string& str) {\n"
+       << "    unsigned int h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;\n"
+       << "    unsigned int h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;\n"
+       << "    unsigned int k[64] = {\n"
+       << "        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,\n"
+       << "        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,\n"
+       << "        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,\n"
+       << "        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,\n"
+       << "        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,\n"
+       << "        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,\n"
+       << "        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,\n"
+       << "        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2\n"
+       << "    };\n"
+       << "    std::vector<unsigned char> buf(str.begin(), str.end());\n"
+       << "    uint64_t orig_len_bits = (uint64_t)buf.size() * 8;\n"
+       << "    buf.push_back(0x80);\n"
+       << "    while ((buf.size() * 8) % 512 != 448) {\n"
+       << "        buf.push_back(0x00);\n"
+       << "    }\n"
+       << "    for (int i = 7; i >= 0; i--) {\n"
+       << "        buf.push_back((unsigned char)((orig_len_bits >> (i * 8)) & 0xFF));\n"
+       << "    }\n"
+       << "    auto rotr = [](unsigned int x, unsigned int n) {\n"
+       << "        return (x >> n) | (x << (32 - n));\n"
+       << "    };\n"
+       << "    for (size_t chunk = 0; chunk < buf.size() / 64; ++chunk) {\n"
+       << "        unsigned int w[64];\n"
+       << "        for (int i = 0; i < 16; ++i) {\n"
+       << "            w[i] = (buf[chunk * 64 + i * 4] << 24) |\n"
+       << "                   (buf[chunk * 64 + i * 4 + 1] << 16) |\n"
+       << "                   (buf[chunk * 64 + i * 4 + 2] << 8) |\n"
+       << "                   (buf[chunk * 64 + i * 4 + 3]);\n"
+       << "        }\n"
+       << "        for (int i = 16; i < 64; ++i) {\n"
+       << "            unsigned int s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);\n"
+       << "            unsigned int s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);\n"
+       << "            w[i] = w[i - 16] + s0 + w[i - 7] + s1;\n"
+       << "        }\n"
+       << "        unsigned int a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;\n"
+       << "        for (int i = 0; i < 64; ++i) {\n"
+       << "            unsigned int S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);\n"
+       << "            unsigned int ch = (e & f) ^ (~e & g);\n"
+       << "            unsigned int temp1 = h + S1 + ch + k[i] + w[i];\n"
+       << "            unsigned int S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);\n"
+       << "            unsigned int maj = (a & b) ^ (a & c) ^ (b & c);\n"
+       << "            unsigned int temp2 = S0 + maj;\n"
+       << "            h = g;\n"
+       << "            g = f;\n"
+       << "            f = e;\n"
+       << "            e = d + temp1;\n"
+       << "            d = c;\n"
+       << "            c = b;\n"
+       << "            b = a;\n"
+       << "            a = temp1 + temp2;\n"
+       << "        }\n"
+       << "        h0 += a; h1 += b; h2 += c; h3 += d;\n"
+       << "        h4 += e; h5 += f; h6 += g; h7 += h;\n"
+       << "    }\n"
+       << "    std::stringstream ss_hex;\n"
+       << "    ss_hex << std::hex << std::setfill('0');\n"
+       << "    ss_hex << std::setw(8) << h0 << std::setw(8) << h1 << std::setw(8) << h2 << std::setw(8) << h3\n"
+       << "           << std::setw(8) << h4 << std::setw(8) << h5 << std::setw(8) << h6 << std::setw(8) << h7;\n"
+       << "    return ss_hex.str();\n"
+       << "}\n\n"
+       << "static const std::string b64_chars = \n"
+       << "             \"ABCDEFGHIJKLMNOPQRSTUVWXYZ\"\n"
+       << "             \"abcdefghijklmnopqrstuvwxyz\"\n"
+       << "             \"0123456789+/\";\n\n"
+       << "std::string base64_encode(const std::string& in) {\n"
+       << "    std::string out;\n"
+       << "    int val = 0, valb = -6;\n"
+       << "    for (unsigned char c : in) {\n"
+       << "        val = (val << 8) + c;\n"
+       << "        valb += 8;\n"
+       << "        while (valb >= 0) {\n"
+       << "            out.push_back(b64_chars[(val >> valb) & 0x3F]);\n"
+       << "            valb -= 6;\n"
+       << "        }\n"
+       << "    }\n"
+       << "    if (valb > -6) out.push_back(b64_chars[((val << 8) >> (valb + 8)) & 0x3F]);\n"
+       << "    while (out.size() % 4) out.push_back('=');\n"
+       << "    return out;\n"
+       << "}\n\n"
+       << "std::string base64url_encode(const std::string& in) {\n"
+       << "    std::string out = base64_encode(in);\n"
+       << "    for (char &c : out) {\n"
+       << "        if (c == '+') c = '-';\n"
+       << "        else if (c == '/') c = '_';\n"
+       << "    }\n"
+       << "    while (!out.empty() && out.back() == '=') {\n"
+       << "        out.pop_back();\n"
+       << "    }\n"
+       << "    return out;\n"
+       << "}\n\n"
+       << "std::string base64_decode(const std::string& in) {\n"
+       << "    std::vector<int> T(256, -1);\n"
+       << "    for (int i = 0; i < 64; i++) T[b64_chars[i]] = i;\n"
+       << "    std::string out;\n"
+       << "    int val = 0, valb = -8;\n"
+       << "    for (unsigned char c : in) {\n"
+       << "        if (T[c] == -1) continue;\n"
+       << "        val = (val << 6) + T[c];\n"
+       << "        valb += 6;\n"
+       << "        if (valb >= 0) {\n"
+       << "            out.push_back(char((val >> valb) & 0xFF));\n"
+       << "            valb -= 8;\n"
+       << "        }\n"
+       << "    }\n"
+       << "    return out;\n"
+       << "}\n\n"
+       << "std::string base64url_decode(std::string in) {\n"
+       << "    for (char &c : in) {\n"
+       << "        if (c == '-') c = '+';\n"
+       << "        else if (c == '_') c = '/';\n"
+       << "    }\n"
+       << "    while (in.size() % 4) {\n"
+       << "        in.push_back('=');\n"
+       << "    }\n"
+       << "    return base64_decode(in);\n"
+       << "}\n\n"
+       << "std::string generateSessionToken(const std::string& payload) {\n"
+       << "    std::string secret = getEnvOr(\"JWT_SECRET\", \"hexagen_secret_key_2026\");\n"
+       << "    std::string encodedPayload = base64url_encode(payload);\n"
+       << "    std::string signature = sha256(encodedPayload + \".\" + secret);\n"
+       << "    return encodedPayload + \".\" + signature;\n"
+       << "}\n\n"
+       << "bool verifySessionToken(const std::string& token, std::string& payloadOut) {\n"
+       << "    std::string secret = getEnvOr(\"JWT_SECRET\", \"hexagen_secret_key_2026\");\n"
+       << "    size_t dot = token.find('.');\n"
+       << "    if (dot == std::string::npos) return false;\n"
+       << "    std::string payload = token.substr(0, dot);\n"
+       << "    std::string signature = token.substr(dot + 1);\n"
+       << "    std::string expectedSignature = sha256(payload + \".\" + secret);\n"
+       << "    if (signature != expectedSignature) return false;\n"
+       << "    payloadOut = base64url_decode(payload);\n"
+       << "    return true;\n"
+       << "}\n\n"
+       << "std::string getHeaderValue(const std::string& req, const std::string& headerName) {\n"
+       << "    std::string reqLower = req;\n"
+       << "    size_t bodyPos = reqLower.find(\"\\r\\n\\r\\n\");\n"
+       << "    if (bodyPos != std::string::npos) {\n"
+       << "        reqLower = reqLower.substr(0, bodyPos);\n"
+       << "    }\n"
+       << "    for (char &c : reqLower) {\n"
+       << "        if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';\n"
+       << "    }\n"
+       << "    std::string target = headerName;\n"
+       << "    for (char &c : target) {\n"
+       << "        if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';\n"
+       << "    }\n"
+       << "    target += \":\";\n"
+       << "    size_t pos = reqLower.find(target);\n"
+       << "    if (pos == std::string::npos) return \"\";\n"
+       << "    size_t valStart = pos + target.length();\n"
+       << "    while (valStart < reqLower.length() && (reqLower[valStart] == ' ' || reqLower[valStart] == '\\t')) valStart++;\n"
+       << "    size_t origStart = valStart;\n"
+       << "    size_t origEnd = req.find(\"\\r\\n\", origStart);\n"
+       << "    if (origEnd == std::string::npos) origEnd = req.length();\n"
+       << "    std::string val = req.substr(origStart, origEnd - origStart);\n"
+       << "    while (!val.empty() && (val.back() == ' ' || val.back() == '\\t' || val.back() == '\\r')) {\n"
+       << "        val.pop_back();\n"
+       << "    }\n"
+       << "    return val;\n"
        << "}\n\n"
        << "std::string readHttpRequest(int client_fd) {\n"
         << "    std::string req;\n"
@@ -1264,6 +1619,114 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             ss << "            }\n";
         }
 
+        // Generate register and login endpoints if User slice is present
+        {
+            std::shared_ptr<ASTSlice> userSlice = findUserSlice(program);
+            if (userSlice) {
+                std::string emailField = getEmailFieldName(userSlice);
+                std::string passwordField = getPasswordFieldName(userSlice);
+                std::string roleField = getRoleFieldName(userSlice);
+                if (!emailField.empty() && !passwordField.empty()) {
+                    if (isFirstRoute) {
+                        ss << "            if (req.find(\"POST /api/signup\") != std::string::npos || req.find(\"POST /api/" << userSlice->name << "/signup\") != std::string::npos) {\n";
+                        isFirstRoute = false;
+                    } else {
+                        ss << "            else if (req.find(\"POST /api/signup\") != std::string::npos || req.find(\"POST /api/" << userSlice->name << "/signup\") != std::string::npos) {\n";
+                    }
+                    ss << "                size_t bodyPos = req.find(\"\\r\\n\\r\\n\");\n";
+                    ss << "                std::string body = (bodyPos != std::string::npos) ? req.substr(bodyPos + 4) : \"\";\n";
+                    ss << "                std::string emailVal = getJSONVal(body, \"" << emailField << "\");\n";
+                    ss << "                std::string passVal = getJSONVal(body, \"" << passwordField << "\");\n";
+                    ss << "                if (emailVal.empty() || passVal.empty()) {\n";
+                    ss << "                    std::string msg = \"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"Missing email or password\\\"}\";\n";
+                    ss << "                    std::stringstream resp;\n";
+                    ss << "                    resp << \"HTTP/1.1 400 Bad Request\\r\\n\"\n";
+                    ss << "                         << \"Content-Type: application/json\\r\\n\"\n";
+                    ss << "                         << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+                    ss << "                         << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\"\n";
+                    ss << "                         << msg;\n";
+                    ss << "                    send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+                    ss << "                } else {\n";
+                    ss << "                    " << userSlice->name << " existing;\n";
+                    ss << "                    if (" << userSlice->name << "::findUser(emailVal, existing)) {\n";
+                    ss << "                        std::string msg = \"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"User already exists\\\"}\";\n";
+                    ss << "                        std::stringstream resp;\n";
+                    ss << "                        resp << \"HTTP/1.1 400 Bad Request\\r\\n\"\n";
+                    ss << "                             << \"Content-Type: application/json\\r\\n\"\n";
+                    ss << "                             << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+                    ss << "                             << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\"\n";
+                    ss << "                             << msg;\n";
+                    ss << "                        send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+                    ss << "                    } else {\n";
+                    ss << "                        " << userSlice->name << " user;\n";
+                    for (const auto& f : userSlice->fields) {
+                        if (f->name == passwordField) {
+                            ss << "                        user." << f->name << " = sha256(passVal);\n";
+                        } else if (f->name == emailField) {
+                            ss << "                        user." << f->name << " = emailVal;\n";
+                        } else {
+                            if (f->type == DataType::INT || f->type == DataType::RELATION) {
+                                ss << "                        user." << f->name << " = safeStoi(getJSONVal(body, \"" << f->name << "\"));\n";
+                            } else if (f->type == DataType::STRING) {
+                                ss << "                        user." << f->name << " = getJSONVal(body, \"" << f->name << "\");\n";
+                            } else if (f->type == DataType::FLOAT) {
+                                ss << "                        user." << f->name << " = safeStod(getJSONVal(body, \"" << f->name << "\"));\n";
+                            } else if (f->type == DataType::BOOL) {
+                                ss << "                        user." << f->name << " = (getJSONVal(body, \"" << f->name << "\") == \"true\");\n";
+                            }
+                        }
+                    }
+                    ss << "                        user.save();\n";
+                    ss << "                        std::string msg = \"{\\\"status\\\":\\\"success\\\",\\\"message\\\":\\\"User registered successfully\\\"}\";\n";
+                    ss << "                        std::stringstream resp;\n";
+                    ss << "                        resp << \"HTTP/1.1 201 Created\\r\\n\"\n";
+                    ss << "                             << \"Content-Type: application/json\\r\\n\"\n";
+                    ss << "                             << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+                    ss << "                             << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\"\n";
+                    ss << "                             << msg;\n";
+                    ss << "                        send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+                    ss << "                    }\n";
+                    ss << "                }\n";
+                    ss << "            }\n";
+
+                    ss << "            else if (req.find(\"POST /api/login\") != std::string::npos || req.find(\"POST /api/" << userSlice->name << "/login\") != std::string::npos) {\n";
+                    ss << "                size_t bodyPos = req.find(\"\\r\\n\\r\\n\");\n";
+                    ss << "                std::string body = (bodyPos != std::string::npos) ? req.substr(bodyPos + 4) : \"\";\n";
+                    ss << "                std::string emailVal = getJSONVal(body, \"" << emailField << "\");\n";
+                    ss << "                std::string passVal = getJSONVal(body, \"" << passwordField << "\");\n";
+                    ss << "                " << userSlice->name << " user;\n";
+                    ss << "                if (emailVal.empty() || passVal.empty() || !" << userSlice->name << "::findUser(emailVal, user) || user." << passwordField << " != sha256(passVal)) {\n";
+                    ss << "                    std::string msg = \"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"Invalid email or password\\\"}\";\n";
+                    ss << "                    std::stringstream resp;\n";
+                    ss << "                    resp << \"HTTP/1.1 401 Unauthorized\\r\\n\"\n";
+                    ss << "                         << \"Content-Type: application/json\\r\\n\"\n";
+                    ss << "                         << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+                    ss << "                         << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\"\n";
+                    ss << "                         << msg;\n";
+                    ss << "                    send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+                    ss << "                } else {\n";
+                    ss << "                    std::stringstream payload;\n";
+                    ss << "                    payload << \"{\\\"email\\\":\\\"\" << emailVal << \"\\\"\";\n";
+                    if (!roleField.empty()) {
+                        ss << "                    payload << \",\\\"rol\\\":\\\"\" << user." << roleField << " << \"\\\"\";\n";
+                    }
+                    ss << "                    payload << \"}\";\n";
+                    ss << "                    std::string token = generateSessionToken(payload.str());\n";
+                    ss << "                    std::stringstream msg;\n";
+                    ss << "                    msg << \"{\\\"status\\\":\\\"success\\\",\\\"token\\\":\\\"\" << token << \"\\\"}\";\n";
+                    ss << "                    std::stringstream resp;\n";
+                    ss << "                    resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
+                    ss << "                         << \"Content-Type: application/json\\r\\n\"\n";
+                    ss << "                         << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+                    ss << "                         << \"Content-Length: \" << msg.str().length() << \"\\r\\n\\r\\n\"\n";
+                    ss << "                         << msg.str();\n";
+                    ss << "                    send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+                    ss << "                }\n";
+                    ss << "            }\n";
+                }
+            }
+        }
+
         // Routing for API endpoints
         if (!program->apis.empty()) {
             for (const auto& r : program->apis[0]->routes) {
@@ -1274,7 +1737,14 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                     ss << "            else if (req.find(\"" << r->method << " " << r->path << "\") != std::string::npos) {\n";
                 }
                 if (r->isSecure) {
-                    ss << "                if (req.find(\"Authorization: Bearer hexagen_token_123\") == std::string::npos) {\n";
+                    ss << "                std::string authHeader = getHeaderValue(req, \"Authorization\");\n";
+                    ss << "                bool isAuth = false;\n";
+                    ss << "                std::string tokenPayload;\n";
+                    ss << "                if (authHeader.rfind(\"Bearer \", 0) == 0) {\n";
+                    ss << "                    std::string token = authHeader.substr(7);\n";
+                    ss << "                    isAuth = verifySessionToken(token, tokenPayload);\n";
+                    ss << "                }\n";
+                    ss << "                if (!isAuth) {\n";
                     ss << "                    std::string msg = \"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"Unauthorized\\\"}\";\n";
                     ss << "                    std::stringstream resp;\n";
                     ss << "                    resp << \"HTTP/1.1 401 Unauthorized\\r\\n\"\n";

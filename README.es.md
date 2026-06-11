@@ -169,22 +169,31 @@ Esto genera el ejecutable `mi_servidor`. Para correrlo en cualquier máquina de 
 ```bash
 ./mi_servidor
 ```
-*(No requiere dependencias externas, ni Node.js, ni bases de datos relacionales externas, ni servidores web adicionales).*
-
----
 
 ### Paso 5: Probar la Seguridad del API (Pillar 3)
-Puedes probar las restricciones de seguridad del endpoint `/process` enviando una petición HTTP manual:
+Puedes probar las restricciones de seguridad de las rutas seguras (anotadas con `secure`) enviando peticiones HTTP:
 
 *   **Petición No Autorizada (Bloqueada):**
     ```bash
     curl -i -X POST http://localhost:8080/process -d '{"item":"Mouse", "cantidad": 5}'
     # Retorna: HTTP/1.1 401 Unauthorized
     ```
-*   **Petición Autorizada (Exitosa):**
+*   **Registrar un Usuario:**
+    ```bash
+    curl -i -X POST http://localhost:8080/api/signup \
+         -d '{"email":"test@example.com", "password":"secret_password", "rol":"admin"}'
+    # Retorna: HTTP/1.1 201 Created
+    ```
+*   **Iniciar sesión para obtener un token firmado criptográficamente:**
+    ```bash
+    curl -i -X POST http://localhost:8080/api/login \
+         -d '{"email":"test@example.com", "password":"secret_password"}'
+    # Retorna: HTTP/1.1 200 OK y tu token de sesión dinámico
+    ```
+*   **Petición Autorizada (usando el token firmado):**
     ```bash
     curl -i -X POST http://localhost:8080/process \
-         -H "Authorization: Bearer hexagen_token_123" \
+         -H "Authorization: Bearer <TU_TOKEN_DE_SESION>" \
          -d '{"item":"Mouse", "cantidad": 5}'
     # Retorna: HTTP/1.1 200 OK y ejecuta la lógica nativa en C++
     ```
@@ -194,45 +203,43 @@ Puedes probar las restricciones de seguridad del endpoint `/process` enviando un
 ## 🛠️ Funcionalidades Avanzadas
 
 ### 1. Multi-vista y Redirección Integrada
-Hexagen admite múltiples bloques `view` en tu código fuente. Para navegar entre ellos de forma nativa en la UI, define un botón cuyo destino (`->`) sea el nombre de la otra vista:
+Hexagen admite múltiples bloques `view`. Para navegar:
 ```prolog
 view Home {
     title "Inicio"
     button "Ver Panel" -> Dashboard
 }
-
-view Dashboard {
-    title "Panel de Control"
-    button "Volver" -> Home
-}
 ```
-El transpilador generará redirecciones JavaScript de alto rendimiento usando `window.location.href = '/<vista>';` para una navegación fluida.
+El transpilador generará redirecciones JavaScript de alto rendimiento usando `window.location.href = '/<vista>';`.
 
 ### 2. Operaciones de Eliminación CRUD (DELETE)
-El framework soporta rutas HTTP de tipo `DELETE` para borrar registros atómicamente de tu base de datos `.jsonl`:
+El framework soporta rutas HTTP `DELETE` para borrar de forma atómica registros de tu base de datos `.jsonl`:
 ```prolog
 api Rest {
     secure route "/eliminar" DELETE -> Inventario.Eliminar
 }
 ```
-Cuando el frontend realice una solicitud DELETE con el identificador (el primer campo de tu slice), el servidor C++ localizará la línea correspondiente en el archivo `.jsonl`, la eliminará de forma segura y reescribirá la persistencia de forma atómica. Además, si hay una tabla renderizando dicho slice en tu vista, se añadirá automáticamente una columna con un botón de **Eliminar** interactivo.
+Cuando el frontend realiza una solicitud DELETE con el identificador, el servidor C++ localiza la línea, la elimina de forma segura y reescribe la persistencia. Se añade automáticamente una columna con un botón interactivo **Eliminar**.
 
 ### 3. Parámetros de Consulta, Filtrado y Paginación
-Hexagen expone automáticamente capacidades de filtrado dinámico y paginación en todos los endpoints GET auto-generados para los slices (`/api/<NombreSlice>`). Puedes enviar query params para realizar consultas parametrizadas y seguras:
+Hexagen expone automáticamente capacidades de filtrado dinámico y paginación en todos los endpoints GET auto-generados para los slices (`/api/<NombreSlice>`).
 
-*   **Filtrado por Campos:** Filtra los resultados haciendo coincidir campos del slice.
-    ```bash
-    curl -i http://localhost:8080/api/Plato?categoria_id=3&disponible=true
-    ```
-*   **Paginación:** Limita y desplaza los resultados usando los parámetros `_limit` y `_offset`.
-    ```bash
-    curl -i http://localhost:8080/api/Plato?_limit=10&_offset=20
-    ```
+*   **Filtrado:** `curl -i http://localhost:8080/api/Plato?categoria_id=3`
+*   **Paginación:** `curl -i http://localhost:8080/api/Plato?_limit=10&_offset=20`
 
-Esto funciona de forma nativa en todos los motores de base de datos soportados (JSONL, SQLite, y PostgreSQL/MySQL), implementando validaciones optimizadas en tiempo de ejecución y consultas parametrizadas para evitar inyecciones SQL.
+### 4. Autenticación Dinámica de Usuarios y Tokens de Sesión Criptográficos
+Si se declara un slice que representa usuarios (llamado exactamente `Usuario` o `User`) en tu código Hexagen (con un campo email/correo/username y un campo contrasena/password/clave), Hexagen expone automáticamente:
+*   **`POST /api/signup`**: Registro estándar de usuarios. Aplica un hash seguro a la contraseña usando SHA-256 antes de persistirla en la base de datos.
+*   **`POST /api/login`**: Autenticación de usuarios. Si las credenciales son correctas, genera y devuelve un token de sesión inmune a manipulaciones.
+
+**Esquema de Tokens de Sesión:**
+Para mantener una arquitectura libre de dependencias, los tokens de sesión se generan bajo el siguiente esquema seguro:
+`Base64URL(payload) + "." + SHA256(Base64URL(payload) + "." + secreto)`
+
+**Configuración:**
+La firma de validación utiliza una clave secreta cargada desde tu archivo `.env` mediante la variable `JWT_SECRET`. Si no se configura ningún secreto, se utiliza un valor por defecto.
 
 ---
-
 
 ## 🛠️ Compilación Manual (Solo para Desarrolladores del Framework)
 Si deseas realizar modificaciones en el compilador de Hexagen o compilarlo tú mismo en lugar de usar los scripts de instalación rápida, asegúrate de tener Go instalado y corre:

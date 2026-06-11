@@ -174,17 +174,29 @@ This generates the `my_server` executable. To run it on any production machine, 
 ---
 
 ### Step 5: Test API Security (Pillar 3)
-You can test the security restrictions of the `/process` endpoint by sending a manual HTTP request:
+You can test the security restrictions of secure routes (annotated with `secure`) by sending HTTP requests:
 
 *   **Unauthorized Request (Blocked):**
     ```bash
     curl -i -X POST http://localhost:8080/process -d '{"item":"Mouse", "cantidad": 5}'
     # Returns: HTTP/1.1 401 Unauthorized
     ```
-*   **Authorized Request (Successful):**
+*   **Sign up a User:**
+    ```bash
+    curl -i -X POST http://localhost:8080/api/signup \
+         -d '{"email":"test@example.com", "password":"secret_password", "rol":"admin"}'
+    # Returns: HTTP/1.1 201 Created
+    ```
+*   **Log in to obtain a cryptographically signed token:**
+    ```bash
+    curl -i -X POST http://localhost:8080/api/login \
+         -d '{"email":"test@example.com", "password":"secret_password"}'
+    # Returns: HTTP/1.1 200 OK and your dynamic session token
+    ```
+*   **Authorized Request (using the signed token):**
     ```bash
     curl -i -X POST http://localhost:8080/process \
-         -H "Authorization: Bearer hexagen_token_123" \
+         -H "Authorization: Bearer <YOUR_SESSION_TOKEN>" \
          -d '{"item":"Mouse", "cantidad": 5}'
     # Returns: HTTP/1.1 200 OK and executes native C++ logic
     ```
@@ -230,6 +242,18 @@ Hexagen automatically exposes dynamic query filtering and pagination on all auto
     ```
 
 This works out of the box across all supported engines (JSONL, SQLite, and PostgreSQL/MySQL), implementing optimized runtime checks and parameterized queries to prevent SQL injections.
+
+### 4. Dynamic User Authentication & Cryptographic Session Tokens
+If a slice representing users (named exactly `Usuario` or `User`) is declared in your Hexagen code (with an email/correo/username field and a contrasena/password/clave field), Hexagen automatically exposes:
+*   **`POST /api/signup`**: Standard user registration. It hashes the password securely using SHA-256 before persisting it to the database.
+*   **`POST /api/login`**: User authentication. If credentials are correct, it generates and returns a tamper-proof session token.
+
+**Session Token Schema:**
+To preserve a zero-dependency architecture (avoiding heavy external cryptographical bindings like OpenSSL), session tokens are generated using the following secure schema:
+`Base64URL(payload) + "." + SHA256(Base64URL(payload) + "." + secret)`
+
+**Configuration:**
+The validation signature uses a secret key loaded from your `.env` file via `JWT_SECRET`. If no secret is configured, a default fallback is used.
 
 ---
 
