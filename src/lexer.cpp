@@ -173,6 +173,7 @@ std::vector<Token> Lexer::tokenize() {
             else if (ident == "api") type = TokenType::API;
             else if (ident == "route") type = TokenType::ROUTE;
             else if (ident == "secure") type = TokenType::SECURE;
+            else if (ident == "websocket") type = TokenType::WEBSOCKET;
             else if (ident == "GET") type = TokenType::HTTP_GET;
             else if (ident == "POST") type = TokenType::HTTP_POST;
             else if (ident == "DELETE" || ident == "delete") type = TokenType::HTTP_DELETE;

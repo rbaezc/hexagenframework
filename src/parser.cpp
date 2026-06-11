@@ -237,17 +237,28 @@ std::shared_ptr<ASTApi> Parser::parseApi() {
         if (match(TokenType::SECURE)) {
             isSecure = true;
         }
-        consume(TokenType::ROUTE, "Expected 'route' definition");
+        
+        bool isWS = false;
+        if (match(TokenType::WEBSOCKET)) {
+            isWS = true;
+        } else {
+            consume(TokenType::ROUTE, "Expected 'route' or 'websocket' definition");
+        }
+
         const auto& pathTok = peek();
         consume(TokenType::STRING_LITERAL, "Expected string literal for route path");
         
         std::string method = "GET";
-        const auto& methodTok = peek();
-        if (match(TokenType::HTTP_GET)) method = "GET";
-        else if (match(TokenType::HTTP_POST)) method = "POST";
-        else if (match(TokenType::HTTP_DELETE)) method = "DELETE";
-        else {
-            throw std::runtime_error("Expected HTTP method (GET, POST, DELETE) at line " + std::to_string(methodTok.line));
+        if (isWS) {
+            method = "WEBSOCKET";
+        } else {
+            const auto& methodTok = peek();
+            if (match(TokenType::HTTP_GET)) method = "GET";
+            else if (match(TokenType::HTTP_POST)) method = "POST";
+            else if (match(TokenType::HTTP_DELETE)) method = "DELETE";
+            else {
+                throw std::runtime_error("Expected HTTP method (GET, POST, DELETE) at line " + std::to_string(methodTok.line));
+            }
         }
 
         consume(TokenType::ARROW, "Expected '->' in route definition");

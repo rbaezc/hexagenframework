@@ -1099,13 +1099,17 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     ss << "#include <sstream>\n";
     ss << "#include <vector>\n";
     ss << "#include <thread>\n";
+    ss << "#include <mutex>\n";
+    ss << "#include <set>\n";
     ss << "#include <chrono>\n";
     ss << "#include <sys/socket.h>\n";
     ss << "#include <netinet/in.h>\n";
     ss << "#include <unistd.h>\n";
     ss << "#include <cstring>\n";
     ss << "#include <fstream>\n";
-    ss << "#include <iomanip>\n\n";
+    ss << "#include <iomanip>\n";
+    ss << "#include <sys/stat.h>\n";
+    ss << "#include <sys/types.h>\n\n";
 
     ss << "// Simple JSON parser helpers\n"
        << "std::string getJSONVal(const std::string& json, const std::string& field) {\n"
@@ -1364,6 +1368,278 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "    }\n"
        << "    return val;\n"
        << "}\n\n"
+       << "struct MultipartPart {\n"
+       << "    std::string name;\n"
+       << "    std::string filename;\n"
+       << "    std::string contentType;\n"
+       << "    std::string data;\n"
+       << "};\n\n"
+       << "std::vector<MultipartPart> parseMultipart(const std::string& body, const std::string& boundary) {\n"
+       << "    std::vector<MultipartPart> parts;\n"
+       << "    if (boundary.empty()) return parts;\n"
+       << "    size_t pos = 0;\n"
+       << "    while (true) {\n"
+       << "        size_t partStart = body.find(boundary, pos);\n"
+       << "        if (partStart == std::string::npos) break;\n"
+       << "        partStart += boundary.length();\n"
+       << "        if (partStart + 2 <= body.length() && body.substr(partStart, 2) == \"--\") {\n"
+       << "            break;\n"
+       << "        }\n"
+       << "        if (partStart + 2 <= body.length() && body.substr(partStart, 2) == \"\\r\\n\") {\n"
+       << "            partStart += 2;\n"
+       << "        } else if (partStart + 1 <= body.length() && body[partStart] == '\\n') {\n"
+       << "            partStart += 1;\n"
+       << "        }\n"
+       << "        size_t partEnd = body.find(boundary, partStart);\n"
+       << "        if (partEnd == std::string::npos) break;\n"
+       << "        size_t contentLen = partEnd - partStart;\n"
+       << "        if (contentLen >= 2 && body[partEnd - 2] == '\\r' && body[partEnd - 1] == '\\n') {\n"
+       << "            contentLen -= 2;\n"
+       << "        } else if (contentLen >= 1 && body[partEnd - 1] == '\\n') {\n"
+       << "            contentLen -= 1;\n"
+       << "        }\n"
+       << "        if (contentLen >= 1 && body[partEnd - contentLen - 1] == '\\r') {\n"
+       << "            contentLen -= 1;\n"
+       << "        }\n"
+       << "        std::string partContent = body.substr(partStart, contentLen);\n"
+       << "        size_t headerEnd = partContent.find(\"\\r\\n\\r\\n\");\n"
+       << "        size_t headerEndLen = 4;\n"
+       << "        if (headerEnd == std::string::npos) {\n"
+       << "            headerEnd = partContent.find(\"\\n\\n\");\n"
+       << "            headerEndLen = 2;\n"
+       << "        }\n"
+       << "        if (headerEnd != std::string::npos) {\n"
+       << "            std::string headers = partContent.substr(0, headerEnd);\n"
+       << "            std::string data = partContent.substr(headerEnd + headerEndLen);\n"
+       << "            MultipartPart part;\n"
+       << "            part.data = data;\n"
+       << "            size_t cdPos = headers.find(\"Content-Disposition:\");\n"
+       << "            if (cdPos != std::string::npos) {\n"
+       << "                size_t cdEnd = headers.find(\"\\n\", cdPos);\n"
+       << "                std::string cdLine = headers.substr(cdPos, cdEnd == std::string::npos ? std::string::npos : cdEnd - cdPos);\n"
+       << "                size_t namePos = cdLine.find(\"name=\\\"\");\n"
+       << "                if (namePos != std::string::npos) {\n"
+       << "                    size_t nameEnd = cdLine.find(\"\\\"\", namePos + 6);\n"
+       << "                    if (nameEnd != std::string::npos) {\n"
+       << "                        part.name = cdLine.substr(namePos + 6, nameEnd - (namePos + 6));\n"
+       << "                    }\n"
+       << "                }\n"
+       << "                size_t filePos = cdLine.find(\"filename=\\\"\");\n"
+       << "                if (filePos != std::string::npos) {\n"
+       << "                    size_t fileEnd = cdLine.find(\"\\\"\", filePos + 10);\n"
+       << "                    if (fileEnd != std::string::npos) {\n"
+       << "                        part.filename = cdLine.substr(filePos + 10, fileEnd - (filePos + 10));\n"
+       << "                    }\n"
+       << "                }\n"
+       << "            }\n"
+       << "            size_t ctPos = headers.find(\"Content-Type:\");\n"
+       << "            if (ctPos != std::string::npos) {\n"
+       << "                size_t ctEnd = headers.find(\"\\n\", ctPos);\n"
+       << "                std::string ctLine = headers.substr(ctPos, ctEnd == std::string::npos ? std::string::npos : ctEnd - ctPos);\n"
+       << "                size_t ctValStart = ctLine.find(\":\") + 1;\n"
+       << "                while (ctValStart < ctLine.length() && (ctLine[ctValStart] == ' ' || ctLine[ctValStart] == '\\t' || ctLine[ctValStart] == '\\r')) ctValStart++;\n"
+       << "                part.contentType = ctLine.substr(ctValStart);\n"
+       << "                while (!part.contentType.empty() && (part.contentType.back() == '\\r' || part.contentType.back() == ' ' || part.contentType.back() == '\\t')) {\n"
+       << "                    part.contentType.pop_back();\n"
+       << "                }\n"
+       << "            }\n"
+       << "            parts.push_back(part);\n"
+       << "        }\n"
+       << "        pos = partEnd;\n"
+       << "    }\n"
+       << "    return parts;\n"
+       << "}\n\n"
+       << "std::string getMultipartVal(const std::vector<MultipartPart>& parts, const std::string& fieldName) {\n"
+       << "    for (const auto& part : parts) {\n"
+       << "        if (part.name == fieldName) {\n"
+       << "            if (!part.filename.empty()) {\n"
+       << "                mkdir(\"public\", 0777);\n"
+       << "                mkdir(\"public/uploads\", 0777);\n"
+       << "                std::string safeName = part.filename;\n"
+       << "                for (char &c : safeName) {\n"
+       << "                    if (c == '/' || c == '\\\\' || c == '?' || c == '*' || c == ':' || c == '|') c = '_';\n"
+       << "                }\n"
+       << "                std::string timestamp = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());\n"
+       << "                std::string savedName = timestamp + \"_\" + safeName;\n"
+       << "                std::string filePath = \"public/uploads/\" + savedName;\n"
+       << "                std::ofstream outfile(filePath, std::ios::binary);\n"
+       << "                if (outfile.is_open()) {\n"
+       << "                    outfile.write(part.data.data(), part.data.size());\n"
+       << "                    outfile.close();\n"
+       << "                    return \"/public/uploads/\" + savedName;\n"
+       << "                }\n"
+       << "                return \"\";\n"
+       << "            } else {\n"
+       << "                return part.data;\n"
+       << "            }\n"
+       << "        }\n"
+       << "    }\n"
+       << "    return \"\";\n"
+       << "}\n\n"
+       << "std::string base64_encode(const std::vector<unsigned char>& data) {\n"
+       << "    static const char* s = \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\";\n"
+       << "    std::string out;\n"
+       << "    int i = 0;\n"
+       << "    int val = 0;\n"
+       << "    for (unsigned char c : data) {\n"
+       << "        val = (val << 8) + c;\n"
+       << "        i += 8;\n"
+       << "        while (i >= 6) {\n"
+       << "            out.push_back(s[(val >> (i - 6)) & 0x3F]);\n"
+       << "            i -= 6;\n"
+       << "        }\n"
+       << "    }\n"
+       << "    if (i > 0) {\n"
+       << "        out.push_back(s[(val << (6 - i)) & 0x3F]);\n"
+       << "    }\n"
+       << "    while (out.size() % 4) {\n"
+       << "        out.push_back('=');\n"
+       << "    }\n"
+       << "    return out;\n"
+       << "}\n\n"
+       << "std::vector<unsigned char> sha1(const std::string& str) {\n"
+       << "    unsigned int h0 = 0x67452301;\n"
+       << "    unsigned int h1 = 0xEFCDAB89;\n"
+       << "    unsigned int h2 = 0x98BADCFE;\n"
+       << "    unsigned int h3 = 0x10325476;\n"
+       << "    unsigned int h4 = 0xC3D2E1F0;\n"
+       << "    std::vector<unsigned char> buf(str.begin(), str.end());\n"
+       << "    uint64_t orig_len_bits = (uint64_t)buf.size() * 8;\n"
+       << "    buf.push_back(0x80);\n"
+       << "    while ((buf.size() * 8) % 512 != 448) {\n"
+       << "        buf.push_back(0x00);\n"
+       << "    }\n"
+       << "    for (int i = 7; i >= 0; i--) {\n"
+       << "        buf.push_back((unsigned char)((orig_len_bits >> (i * 8)) & 0xFF));\n"
+       << "    }\n"
+       << "    auto leftrotate = [](unsigned int value, unsigned int bits) {\n"
+       << "        return (value << bits) | (value >> (32 - bits));\n"
+       << "    };\n"
+       << "    for (size_t chunk = 0; chunk < buf.size() / 64; ++chunk) {\n"
+       << "        unsigned int w[80];\n"
+       << "        for (int i = 0; i < 16; ++i) {\n"
+       << "            w[i] = (buf[chunk * 64 + i * 4] << 24) |\n"
+       << "                   (buf[chunk * 64 + i * 4 + 1] << 16) |\n"
+       << "                   (buf[chunk * 64 + i * 4 + 2] << 8) |\n"
+       << "                   (buf[chunk * 64 + i * 4 + 3]);\n"
+       << "        }\n"
+       << "        for (int i = 16; i < 80; ++i) {\n"
+       << "            w[i] = leftrotate(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);\n"
+       << "        }\n"
+       << "        unsigned int a = h0, b = h1, c = h2, d = h3, e = h4;\n"
+       << "        for (int i = 0; i < 80; ++i) {\n"
+       << "            unsigned int f, k;\n"
+       << "            if (i < 20) {\n"
+       << "                f = (b & c) | ((~b) & d);\n"
+       << "                k = 0x5A827999;\n"
+       << "            } else if (i < 40) {\n"
+       << "                f = b ^ c ^ d;\n"
+       << "                k = 0x6ED9EBA1;\n"
+       << "            } else if (i < 60) {\n"
+       << "                f = (b & c) | (b & d) | (c & d);\n"
+       << "                k = 0x8F1BBCDC;\n"
+       << "            } else {\n"
+       << "                f = b ^ c ^ d;\n"
+       << "                k = 0xCA62C1D6;\n"
+       << "            }\n"
+       << "            unsigned int temp = leftrotate(a, 5) + f + e + k + w[i];\n"
+       << "            e = d; d = c; c = leftrotate(b, 30); b = a; a = temp;\n"
+       << "        }\n"
+       << "        h0 += a; h1 += b; h2 += c; h3 += d; h4 += e;\n"
+       << "    }\n"
+       << "    std::vector<unsigned char> hash(20);\n"
+       << "    hash[0] = (h0 >> 24) & 0xFF; hash[1] = (h0 >> 16) & 0xFF; hash[2] = (h0 >> 8) & 0xFF; hash[3] = h0 & 0xFF;\n"
+       << "    hash[4] = (h1 >> 24) & 0xFF; hash[5] = (h1 >> 16) & 0xFF; hash[6] = (h1 >> 8) & 0xFF; hash[7] = h1 & 0xFF;\n"
+       << "    hash[8] = (h2 >> 24) & 0xFF; hash[9] = (h2 >> 16) & 0xFF; hash[10] = (h2 >> 8) & 0xFF; hash[11] = h2 & 0xFF;\n"
+       << "    hash[12] = (h3 >> 24) & 0xFF; hash[13] = (h3 >> 16) & 0xFF; hash[14] = (h3 >> 8) & 0xFF; hash[15] = h3 & 0xFF;\n"
+       << "    hash[16] = (h4 >> 24) & 0xFF; hash[17] = (h4 >> 16) & 0xFF; hash[18] = (h4 >> 8) & 0xFF; hash[19] = h4 & 0xFF;\n"
+       << "    return hash;\n"
+       << "}\n\n"
+       << "std::string getWebSocketAcceptKey(const std::string& key) {\n"
+       << "    std::string concat = key + \"258EAFA5-E914-47DA-95CA-C5AB0DC85B11\";\n"
+       << "    return base64_encode(sha1(concat));\n"
+       << "}\n\n"
+       << "std::set<int> active_ws_clients;\n"
+       << "std::mutex ws_clients_mutex;\n\n"
+       << "void register_ws_client(int fd) {\n"
+       << "    std::lock_guard<std::mutex> lock(ws_clients_mutex);\n"
+       << "    active_ws_clients.insert(fd);\n"
+       << "}\n\n"
+       << "void unregister_ws_client(int fd) {\n"
+       << "    std::lock_guard<std::mutex> lock(ws_clients_mutex);\n"
+       << "    active_ws_clients.erase(fd);\n"
+       << "    close(fd);\n"
+       << "}\n\n"
+       << "void sendWebSocketFrame(int client_fd, const std::string& message) {\n"
+       << "    std::vector<unsigned char> frame;\n"
+       << "    frame.push_back(0x81);\n"
+       << "    size_t len = message.length();\n"
+       << "    if (len < 126) {\n"
+       << "        frame.push_back((unsigned char)len);\n"
+       << "    } else if (len <= 65535) {\n"
+       << "        frame.push_back(126);\n"
+       << "        frame.push_back((len >> 8) & 0xFF);\n"
+       << "        frame.push_back(len & 0xFF);\n"
+       << "    } else {\n"
+       << "        frame.push_back(127);\n"
+       << "        for (int i = 7; i >= 0; --i) {\n"
+       << "            frame.push_back((len >> (i * 8)) & 0xFF);\n"
+       << "        }\n"
+       << "    }\n"
+       << "    frame.insert(frame.end(), message.begin(), message.end());\n"
+       << "    send(client_fd, frame.data(), frame.size(), 0);\n"
+       << "}\n\n"
+       << "void broadcast_ws_message(const std::string& message, int sender_fd = -1) {\n"
+       << "    std::lock_guard<std::mutex> lock(ws_clients_mutex);\n"
+       << "    for (int fd : active_ws_clients) {\n"
+       << "        if (fd != sender_fd) {\n"
+       << "            sendWebSocketFrame(fd, message);\n"
+       << "        }\n"
+       << "    }\n"
+       << "}\n\n"
+       << "bool readWebSocketFrame(int client_fd, std::string& out_message) {\n"
+       << "    unsigned char header[2];\n"
+       << "    int n = recv(client_fd, header, 2, 0);\n"
+       << "    if (n <= 0) return false;\n"
+       << "    unsigned char opcode = header[0] & 0x0F;\n"
+       << "    bool masked = (header[1] & 0x80) != 0;\n"
+       << "    uint64_t payload_len = header[1] & 0x7F;\n"
+       << "    if (opcode == 0x8) return false;\n"
+       << "    if (payload_len == 126) {\n"
+       << "        unsigned char ext_len[2];\n"
+       << "        if (recv(client_fd, ext_len, 2, 0) != 2) return false;\n"
+       << "        payload_len = (ext_len[0] << 8) | ext_len[1];\n"
+       << "    } else if (payload_len == 127) {\n"
+       << "        unsigned char ext_len[8];\n"
+       << "        if (recv(client_fd, ext_len, 8, 0) != 8) return false;\n"
+       << "        payload_len = 0;\n"
+       << "        for (int i = 0; i < 8; ++i) {\n"
+       << "            payload_len = (payload_len << 8) | ext_len[i];\n"
+       << "        }\n"
+       << "    }\n"
+       << "    unsigned char masking_key[4] = {0};\n"
+       << "    if (masked) {\n"
+       << "        if (recv(client_fd, masking_key, 4, 0) != 4) return false;\n"
+       << "    }\n"
+       << "    std::vector<char> payload(payload_len);\n"
+       << "    if (payload_len > 0) {\n"
+       << "        size_t total_received = 0;\n"
+       << "        while (total_received < payload_len) {\n"
+       << "            int rec = recv(client_fd, payload.data() + total_received, payload_len - total_received, 0);\n"
+       << "            if (rec <= 0) return false;\n"
+       << "            total_received += rec;\n"
+       << "        }\n"
+       << "        if (masked) {\n"
+       << "            for (size_t i = 0; i < payload_len; ++i) {\n"
+       << "                payload[i] ^= masking_key[i % 4];\n"
+       << "            }\n"
+       << "        }\n"
+       << "    }\n"
+       << "    if (opcode == 0x1) {\n"
+       << "        out_message = std::string(payload.begin(), payload.end());\n"
+       << "    }\n"
+       << "    return true;\n"
+       << "}\n\n"
        << "std::string readHttpRequest(int client_fd) {\n"
         << "    std::string req;\n"
         << "    char buffer[4096];\n"
@@ -1558,13 +1834,78 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         
         ss << "    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) return 1;\n";
         ss << "    if (listen(server_fd, 5) < 0) return 1;\n\n";
-        
         ss << "    std::cout << \"🏎️  [Hexagen Server] App running at http://localhost:\" << port << std::endl;\n\n";
         
         ss << "    while (true) {\n";
         ss << "        if ((client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) continue;\n";
-                ss << "        std::string req = readHttpRequest(client_fd);\n";
+        ss << "        std::string req = readHttpRequest(client_fd);\n";
         ss << "        if (!req.empty()) {\n";        
+        ss << "            bool wsUpgraded = false;\n";
+        ss << "            std::string upgradeHeader = getHeaderValue(req, \"Upgrade\");\n";
+        ss << "            for (char &c : upgradeHeader) { if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a'; }\n";
+        ss << "            if (upgradeHeader == \"websocket\") {\n";
+
+        for (const auto& api : program->apis) {
+            for (const auto& r : api->routes) {
+                if (r->method == "WEBSOCKET") {
+                    ss << "                if (req.find(\"GET " << r->path << " \") != std::string::npos) {\n";
+                    ss << "                    std::string wsKey = getHeaderValue(req, \"Sec-WebSocket-Key\");\n";
+                    ss << "                    if (!wsKey.empty()) {\n";
+                    ss << "                        std::string acceptKey = getWebSocketAcceptKey(wsKey);\n";
+                    ss << "                        std::stringstream handshake;\n";
+                    ss << "                        handshake << \"HTTP/1.1 101 Switching Protocols\\r\\n\"\n";
+                    ss << "                                  << \"Upgrade: websocket\\r\\n\"\n";
+                    ss << "                                  << \"Connection: Upgrade\\r\\n\"\n";
+                    ss << "                                  << \"Sec-WebSocket-Accept: \" << acceptKey << \"\\r\\n\\r\\n\";\n";
+                    ss << "                        send(client_fd, handshake.str().c_str(), handshake.str().length(), 0);\n";
+                    ss << "                        wsUpgraded = true;\n";
+                    ss << "                        std::thread([client_fd]() {\n";
+                    ss << "                            register_ws_client(client_fd);\n";
+                    ss << "                            std::string msg;\n";
+                    ss << "                            while (readWebSocketFrame(client_fd, msg)) {\n";
+                    ss << "                                if (!msg.empty()) {\n";
+                    ss << "                                    std::cout << \"[WebSocket] Received: \" << msg << std::endl;\n";
+
+                    size_t dotPos = r->targetAction.find('.');
+                    std::string sliceName = (dotPos != std::string::npos) ? r->targetAction.substr(0, dotPos) : "";
+                    std::string actionName = (dotPos != std::string::npos) ? r->targetAction.substr(dotPos + 1) : r->targetAction;
+                    if (!sliceName.empty()) {
+                        ss << "                                    " << sliceName << " instance;\n";
+                        for (const auto& slice : program->slices) {
+                            if (slice->name == sliceName) {
+                                for (const auto& field : slice->fields) {
+                                    ss << "                                    {\n";
+                                    ss << "                                        std::string val = getJSONVal(msg, \"" << field->name << "\");\n";
+                                    if (field->type == DataType::INT || field->type == DataType::RELATION) {
+                                        ss << "                                        if (!val.empty()) instance." << field->name << " = safeStoi(val);\n";
+                                    } else if (field->type == DataType::STRING) {
+                                        ss << "                                        if (!val.empty()) instance." << field->name << " = val;\n";
+                                    } else if (field->type == DataType::FLOAT) {
+                                        ss << "                                        if (!val.empty()) instance." << field->name << " = safeStod(val);\n";
+                                    } else if (field->type == DataType::BOOL) {
+                                        ss << "                                        if (!val.empty()) instance." << field->name << " = (val == \"true\" || val == \"1\");\n";
+                                    }
+                                    ss << "                                    }\n";
+                                }
+                            }
+                        }
+                        ss << "                                    instance.save();\n";
+                        ss << "                                    instance." << actionName << "();\n";
+                    }
+
+                    ss << "                                    broadcast_ws_message(msg, client_fd);\n";
+                    ss << "                                }\n";
+                    ss << "                            }\n";
+                    ss << "                            unregister_ws_client(client_fd);\n";
+                    ss << "                        }).detach();\n";
+                    ss << "                    }\n";
+                    ss << "                }\n";
+                }
+            }
+        }
+
+        ss << "            }\n";
+        ss << "            if (wsUpgraded) continue;\n";
         // Dynamic multi-view routing
         bool isFirstRoute = true;
         if (program->views.empty()) {
@@ -1599,6 +1940,40 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                 ss << "            }\n";
             }
         }
+
+        // Static file serving for uploads (Pillar 4)
+        ss << "            else if (req.rfind(\"GET /public/uploads/\", 0) == 0) {\n";
+        ss << "                size_t space = req.find(' ', 4);\n";
+        ss << "                std::string path = (space != std::string::npos) ? req.substr(4, space - 4) : \"\";\n";
+        ss << "                if (!path.empty() && path[0] == '/') path = path.substr(1);\n";
+        ss << "                std::ifstream file(path, std::ios::binary);\n";
+        ss << "                if (file.is_open()) {\n";
+        ss << "                    file.seekg(0, std::ios::end);\n";
+        ss << "                    size_t size = file.tellg();\n";
+        ss << "                    file.seekg(0, std::ios::beg);\n";
+        ss << "                    std::vector<char> fileBuf(size);\n";
+        ss << "                    file.read(fileBuf.data(), size);\n";
+        ss << "                    file.close();\n";
+        ss << "                    std::string contentType = \"application/octet-stream\";\n";
+        ss << "                    if (path.find(\".png\") != std::string::npos) contentType = \"image/png\";\n";
+        ss << "                    else if (path.find(\".jpg\") != std::string::npos || path.find(\".jpeg\") != std::string::npos) contentType = \"image/jpeg\";\n";
+        ss << "                    else if (path.find(\".gif\") != std::string::npos) contentType = \"image/gif\";\n";
+        ss << "                    std::stringstream resp;\n";
+        ss << "                    resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
+        ss << "                         << \"Content-Type: \" << contentType << \"\\r\\n\"\n";
+        ss << "                         << \"Content-Length: \" << size << \"\\r\\n\"\n";
+        ss << "                         << \"Access-Control-Allow-Origin: *\\r\\n\\r\\n\";\n";
+        ss << "                    send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+        ss << "                    send(client_fd, fileBuf.data(), size, 0);\n";
+        ss << "                } else {\n";
+        ss << "                    std::string msg = \"File Not Found\";\n";
+        ss << "                    std::stringstream resp;\n";
+        ss << "                    resp << \"HTTP/1.1 404 Not Found\\r\\n\"\n";
+        ss << "                         << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\"\n";
+        ss << "                         << msg;\n";
+        ss << "                    send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+        ss << "                }\n";
+        ss << "            }\n";
 
         // Route serving database tables queries
         for (const auto& slice : program->slices) {
@@ -1759,6 +2134,20 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                 }
                 ss << "                size_t bodyPos = req.find(\"\\r\\n\\r\\n\");\n";
                 ss << "                std::string body = (bodyPos != std::string::npos) ? req.substr(bodyPos + 4) : \"\";\n";
+                ss << "                bool isMultipart = false;\n";
+                ss << "                std::vector<MultipartPart> mpParts;\n";
+                ss << "                std::string contentType = getHeaderValue(req, \"Content-Type\");\n";
+                ss << "                if (contentType.find(\"multipart/form-data\") != std::string::npos) {\n";
+                ss << "                    size_t bPos = contentType.find(\"boundary=\");\n";
+                ss << "                    if (bPos != std::string::npos) {\n";
+                ss << "                        std::string boundary = contentType.substr(bPos + 9);\n";
+                ss << "                        if (!boundary.empty() && boundary.front() == '\"') boundary = boundary.substr(1);\n";
+                ss << "                        if (!boundary.empty() && boundary.back() == '\"') boundary.pop_back();\n";
+                ss << "                        boundary = \"--\" + boundary;\n";
+                ss << "                        mpParts = parseMultipart(body, boundary);\n";
+                ss << "                        isMultipart = true;\n";
+                ss << "                    }\n";
+                ss << "                }\n";
                 
                 ss << "                std::cout << \"[HTTP Endpoint] Invoked " << r->path << " -> Running " << r->targetAction << "\" << std::endl;\n";
                 
@@ -1787,21 +2176,24 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                         for (const auto& slice : program->slices) {
                             if (slice->name == sliceName) {
                                 for (const auto& field : slice->fields) {
-                                    ss << "                instance." << field->name << " = ";
-                                                                        if (field->type == DataType::INT || field->type == DataType::RELATION) {
-                                        ss << "safeStoi(getJSONVal(body, \"" << field->name << "\"));\n";
+                                    ss << "                {\n";
+                                    ss << "                    std::string val = isMultipart ? getMultipartVal(mpParts, \"" << field->name << "\") : getJSONVal(body, \"" << field->name << "\");\n";
+                                    if (field->type == DataType::INT || field->type == DataType::RELATION) {
+                                        ss << "                    instance." << field->name << " = safeStoi(val);\n";
                                     } else if (field->type == DataType::STRING) {
-                                        ss << "getJSONVal(body, \"" << field->name << "\");\n";
+                                        ss << "                    instance." << field->name << " = val;\n";
                                     } else if (field->type == DataType::FLOAT) {
-                                        ss << "safeStod(getJSONVal(body, \"" << field->name << "\"));\n";
+                                        ss << "                    instance." << field->name << " = safeStod(val);\n";
                                     } else if (field->type == DataType::BOOL) {
-                                        ss << "(getJSONVal(body, \"" << field->name << "\") == \"true\");\n";
+                                        ss << "                    instance." << field->name << " = (val == \"true\" || val == \"1\");\n";
                                     }
+                                    ss << "                }\n";
                                 }
                             }
                         }
                         ss << "                instance.save();\n";
                         ss << "                instance." << actionName << "();\n";
+                        ss << "                broadcast_ws_message(\"{\\\"event\\\": \\\"action\\\", \\\"target\\\": \\\"" << sliceName << "." << actionName << "\\\"}\");\n";
                     }
                 }
                 

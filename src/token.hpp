@@ -27,6 +27,7 @@ enum class TokenType {
     API,
     ROUTE,
     SECURE, // "secure"
+    WEBSOCKET, // "websocket"
     ARROW, // "->"
     HTTP_GET,
     HTTP_POST,
@@ -90,6 +91,7 @@ inline std::string tokenTypeToString(TokenType type) {
         case TokenType::API: return "api";
         case TokenType::ROUTE: return "route";
         case TokenType::SECURE: return "secure";
+        case TokenType::WEBSOCKET: return "websocket";
         case TokenType::ARROW: return "->";
         case TokenType::HTTP_GET: return "GET";
         case TokenType::HTTP_POST: return "POST";
