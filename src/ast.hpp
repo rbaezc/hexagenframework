@@ -161,6 +161,22 @@ public:
     }
 };
 
+class ASTEnqueueStatement : public ASTStatement {
+public:
+    std::string jobName;
+    std::vector<std::pair<std::string, std::shared_ptr<ASTExpression>>> arguments;
+
+    ASTEnqueueStatement(std::string name) : jobName(name) {}
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "EnqueueStatement: " << jobName << "(\n";
+        for (const auto& arg : arguments) {
+            std::cout << std::string(indent + 2, ' ') << arg.first << ":\n";
+            arg.second->print(indent + 4);
+        }
+        std::cout << std::string(indent, ' ') << ")\n";
+    }
+};
+
 class ASTField : public ASTNode {
 public:
     std::string name;
@@ -273,17 +289,64 @@ public:
     }
 };
 
+class ASTMiddleware : public ASTNode {
+public:
+    std::string name;
+    std::vector<std::string> arguments;
+
+    ASTMiddleware(std::string name, std::vector<std::string> args = {})
+        : name(name), arguments(args) {}
+
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "Middleware: " << name;
+        if (!arguments.empty()) {
+            std::cout << "(";
+            for (size_t i = 0; i < arguments.size(); ++i) {
+                std::cout << arguments[i];
+                if (i + 1 < arguments.size()) std::cout << ", ";
+            }
+            std::cout << ")";
+        }
+        std::cout << "\n";
+    }
+};
+
 class ASTApi : public ASTNode {
 public:
     std::string name;
     std::vector<std::shared_ptr<ASTRoute>> routes;
+    std::vector<std::shared_ptr<ASTMiddleware>> middlewares;
 
     ASTApi(std::string name) : name(name) {}
 
     void print(int indent = 0) const override {
         std::cout << std::string(indent, ' ') << "API: " << name << "\n";
+        for (const auto& mw : middlewares) {
+            mw->print(indent + 2);
+        }
         for (const auto& route : routes) {
             route->print(indent + 2);
+        }
+    }
+};
+
+class ASTJob : public ASTNode {
+public:
+    std::string name;
+    std::vector<std::shared_ptr<ASTField>> fields;
+    std::vector<std::shared_ptr<ASTAction>> actions;
+
+    ASTJob(std::string name) : name(name) {}
+
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "Job: " << name << "\n";
+        std::cout << std::string(indent + 2, ' ') << "Fields:\n";
+        for (const auto& field : fields) {
+            field->print(indent + 4);
+        }
+        std::cout << std::string(indent + 2, ' ') << "Actions:\n";
+        for (const auto& action : actions) {
+            action->print(indent + 4);
         }
     }
 };
@@ -295,10 +358,12 @@ public:
     std::vector<std::shared_ptr<ASTSlice>> slices;
     std::vector<std::shared_ptr<ASTView>> views;
     std::vector<std::shared_ptr<ASTApi>> apis;
+    std::vector<std::shared_ptr<ASTJob>> jobs;
 
     void print(int indent = 0) const override {
         std::cout << "Program AST (DB Engine: " << dbType << "):\n";
         for (const auto& slice : slices) slice->print(indent + 2);
+        for (const auto& job : jobs) job->print(indent + 2);
         for (const auto& view : views) view->print(indent + 2);
         for (const auto& api : apis) api->print(indent + 2);
     }

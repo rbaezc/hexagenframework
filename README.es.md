@@ -286,6 +286,51 @@ Esto funciona de forma predeterminada en todos los motores compatibles (JSONL, S
     **Configuración:**
     La firma de validación utiliza una clave secreta cargada desde tu archivo `.env` mediante la variable `JWT_SECRET`. Si no se configura ningún secreto, se utiliza un valor por defecto.
 
+
+### 4. Middlewares de API y Trabajos en Segundo Plano Asíncronos
+Hexagen ofrece soporte nativo para directivas de middleware a nivel de API y procesamiento asíncrono en segundo plano.
+
+#### Middlewares de API
+Dentro de un bloque `api`, puedes registrar middlewares globales usando la directiva `use`:
+*   **CORS (`use cors`):** Maneja de manera nativa las solicitudes preflight `OPTIONS`, inyectando las cabeceras estándar de acceso cruzado (`Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: *`, etc.) en todos los endpoints dinámicos.
+*   **Limitación de Tasa Basada en IP (`use rate_limit(limit, window)`):** Rastrea las direcciones IP de los clientes mediante mapeos locales seguros para hilos (sin requerir dependencias externas como Redis) y bloquea a los clientes con una respuesta `429 Too Many Requests` cuando se excede el presupuesto de solicitudes en la ventana de tiempo especificada (en segundos).
+
+```prolog
+api MiApi {
+    use cors
+    use rate_limit(100, 60) // Límite de 100 solicitudes por cada 60 segundos
+
+    route "/items" GET -> Inventario.Listar
+}
+```
+
+#### Trabajos Asíncronos en Segundo Plano (Background Jobs)
+Los trabajos en segundo plano permiten ejecutar tareas costosas o prolongadas (como enviar correos electrónicos, registrar auditorías o procesar imágenes) de forma asíncrona mediante un grupo de hilos de trabajo, evitando bloquear el bucle de eventos principal del servidor web.
+*   **Sintaxis de Trabajo (Job):** Se define con el bloque `job`, soportando campos (fields) y una acción `Run`.
+*   **Sintaxis de Encolado (Enqueue):** Se encola una tarea de forma asíncrona usando `enqueue JobName(field1: val1, field2: val2)`.
+
+```prolog
+job EnviarNotificacion {
+    field usuarioId: int
+    field mensaje: string
+
+    action Run() {
+        print("Enviando mensaje al usuario: " + mensaje)
+    }
+}
+
+slice Pedido {
+    field pedidoId: int
+
+    action Crear() {
+        print("Creando pedido")
+        enqueue EnviarNotificacion(usuarioId: 1, mensaje: "¡Tu pedido ha sido creado!")
+    }
+}
+```
+
+Hexagen transpila los trabajos en estructuras C++ y arranca automáticamente un grupo de hilos de trabajo seguros (`std::thread`, `std::mutex`, `std::condition_variable`) al iniciar el servidor para consumir y ejecutar las tareas en segundo plano.
+
 ### 5. Subida de Archivos Multipart y Servidor Estático
 Hexagen admite de forma nativa la subida de archivos tipo `multipart/form-data` para manejar archivos multimedia (como fotos de platos de comida en una API de restaurante).
 

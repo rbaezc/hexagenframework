@@ -49,6 +49,8 @@ private:
     // View and API Parsing
     std::shared_ptr<ASTView> parseView();
     std::shared_ptr<ASTApi> parseApi();
+    std::shared_ptr<ASTJob> parseJob();
+    std::shared_ptr<ASTMiddleware> parseMiddleware();
     void parseConfig(std::shared_ptr<ASTProgram> program);
     
     // Expression Parsing Helpers

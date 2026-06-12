@@ -68,6 +68,14 @@ void SecurityAnalyzer::analyzeAST() {
             }
         }
     }
+    for (const auto& job : program->jobs) {
+        for (const auto& action : job->actions) {
+            std::set<std::string> taintedVars;
+            for (const auto& stmt : action->statements) {
+                analyzeStatement(stmt, "Job_" + job->name, taintedVars);
+            }
+        }
+    }
 }
 
 void SecurityAnalyzer::analyzeStatement(const std::shared_ptr<ASTStatement>& stmt, const std::string& sliceName, std::set<std::string>& taintedVars) {
@@ -128,6 +136,13 @@ void SecurityAnalyzer::analyzeStatement(const std::shared_ptr<ASTStatement>& stm
                     throw std::runtime_error("Security Error: Potential exfiltration of sensitive credentials detected in slice " +
                                              sliceName + ": tainted variable passed to network function '" + callStmt->actionName + "'.");
                 }
+            }
+        }
+    }
+    else if (auto enqueueStmt = std::dynamic_pointer_cast<ASTEnqueueStatement>(stmt)) {
+        for (const auto& arg : enqueueStmt->arguments) {
+            if (isExpressionTainted(arg.second, taintedVars)) {
+                // Keep track or log if needed, no action required for now
             }
         }
     }

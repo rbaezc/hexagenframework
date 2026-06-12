@@ -51,6 +51,16 @@ std::string CodeGenerator::generateStatement(std::shared_ptr<ASTStatement> stmt)
             if (i + 1 < callStmt->arguments.size()) ss << ", ";
         }
         ss << ");\n";
+    } else if (auto enqueueStmt = std::dynamic_pointer_cast<ASTEnqueueStatement>(stmt)) {
+        ss << "        {\n";
+        ss << "            auto jobInst = std::make_shared<Job_" << enqueueStmt->jobName << ">();\n";
+        for (const auto& arg : enqueueStmt->arguments) {
+            ss << "            jobInst->" << arg.first << " = " << generateExpression(arg.second) << ";\n";
+        }
+        ss << "            enqueue_background_task([jobInst]() {\n";
+        ss << "                jobInst->Run();\n";
+        ss << "            });\n";
+        ss << "        }\n";
     }
     return ss.str();
 }
@@ -105,13 +115,13 @@ std::string CodeGenerator::generateField(std::shared_ptr<ASTField> field) {
     return ss.str();
 }
 
-std::string CodeGenerator::generateAction(std::shared_ptr<ASTAction> action) {
+std::string CodeGenerator::generateActionImpl(const std::string& className, std::shared_ptr<ASTAction> action) {
     std::stringstream ss;
-    ss << "    void " << action->name << "() {\n";
+    ss << "void " << className << "::" << action->name << "() {\n";
     for (const auto& stmt : action->statements) {
         ss << generateStatement(stmt);
     }
-    ss << "    }\n";
+    ss << "}\n";
     return ss.str();
 }
 
@@ -808,9 +818,23 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     }
 
     for (const auto& action : slice->actions) {
-        ss << generateAction(action);
+        ss << "    void " << action->name << "();\n";
     }
 
+    ss << "};\n";
+    return ss.str();
+}
+
+std::string CodeGenerator::generateJob(std::shared_ptr<ASTJob> job) {
+    std::stringstream ss;
+    ss << "struct Job_" << job->name << " {\n";
+    for (const auto& field : job->fields) {
+        ss << "    " << dataTypeToString(field->type) << " " << field->name << ";\n";
+    }
+    ss << "\n";
+    for (const auto& action : job->actions) {
+        ss << "    void " << action->name << "();\n";
+    }
     ss << "};\n";
     return ss.str();
 }
@@ -1089,6 +1113,26 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
 }
 
 std::string CodeGenerator::generateSourceCode(bool includeMain) {
+    bool hasCors = false;
+    bool hasRateLimit = false;
+    int rateLimitLimit = 0;
+    int rateLimitWindow = 0;
+    if (!program->apis.empty()) {
+        for (const auto& mw : program->apis[0]->middlewares) {
+            if (mw->name == "cors") {
+                hasCors = true;
+            } else if (mw->name == "rate_limit") {
+                hasRateLimit = true;
+                if (mw->arguments.size() >= 2) {
+                    try {
+                        rateLimitLimit = std::stoi(mw->arguments[0]);
+                        rateLimitWindow = std::stoi(mw->arguments[1]);
+                    } catch (...) {}
+                }
+            }
+        }
+    }
+
     std::stringstream ss;
     ss << "// Generated automatically by Hexagen Framework\n";
     ss << "// Database Engine: " << program->dbType << "\n";
@@ -1114,7 +1158,72 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     ss << "#include <fstream>\n";
     ss << "#include <iomanip>\n";
     ss << "#include <sys/stat.h>\n";
-    ss << "#include <sys/types.h>\n\n";
+    ss << "#include <sys/types.h>\n";
+    ss << "#include <functional>\n";
+    ss << "#include <queue>\n";
+    ss << "#include <unordered_map>\n";
+    ss << "#include <arpa/inet.h>\n";
+    ss << "#include <condition_variable>\n\n";
+
+    ss << "// Asynchronous Job Queue and Worker Pool\n"
+       << "std::queue<std::function<void()>> global_job_queue;\n"
+       << "std::mutex global_job_queue_mutex;\n"
+       << "std::condition_variable global_job_queue_cv;\n\n"
+       << "void enqueue_background_task(std::function<void()> task) {\n"
+       << "    {\n"
+       << "        std::lock_guard<std::mutex> lock(global_job_queue_mutex);\n"
+       << "        global_job_queue.push(task);\n"
+       << "    }\n"
+       << "    global_job_queue_cv.notify_one();\n"
+       << "}\n\n"
+       << "void job_worker_thread() {\n"
+       << "    while (true) {\n"
+       << "        std::function<void()> task;\n"
+       << "        {\n"
+       << "            std::unique_lock<std::mutex> lock(global_job_queue_mutex);\n"
+       << "            global_job_queue_cv.wait(lock, [] { return !global_job_queue.empty(); });\n"
+       << "            task = global_job_queue.front();\n"
+       << "            global_job_queue.pop();\n"
+       << "        }\n"
+       << "        if (task) {\n"
+       << "            try {\n"
+       << "                task();\n"
+       << "            } catch (const std::exception& e) {\n"
+       << "                std::cerr << \"[Job Worker Error] \" << e.what() << std::endl;\n"
+       << "            } catch (...) {\n"
+       << "                std::cerr << \"[Job Worker Error] Unknown error\" << std::endl;\n"
+       << "            }\n"
+       << "        }\n"
+       << "    }\n"
+       << "}\n\n";
+
+    ss << "// IP-based Rate Limiting Middleware State & Checker\n"
+       << "struct RateLimitEntry {\n"
+       << "    int request_count;\n"
+       << "    std::chrono::steady_clock::time_point window_start;\n"
+       << "};\n\n"
+       << "std::unordered_map<std::string, RateLimitEntry> rate_limit_map;\n"
+       << "std::mutex rate_limit_mutex;\n\n"
+       << "bool check_rate_limit(const std::string& ip, int limit, int window_seconds) {\n"
+       << "    std::lock_guard<std::mutex> lock(rate_limit_mutex);\n"
+       << "    auto now = std::chrono::steady_clock::now();\n"
+       << "    auto it = rate_limit_map.find(ip);\n"
+       << "    if (it == rate_limit_map.end()) {\n"
+       << "        rate_limit_map[ip] = {1, now};\n"
+       << "        return true;\n"
+       << "    }\n"
+       << "    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - it->second.window_start).count();\n"
+       << "    if (elapsed >= window_seconds) {\n"
+       << "        it->second.request_count = 1;\n"
+       << "        it->second.window_start = now;\n"
+       << "        return true;\n"
+       << "    }\n"
+       << "    if (it->second.request_count >= limit) {\n"
+       << "        return false;\n"
+       << "    }\n"
+       << "    it->second.request_count++;\n"
+       << "    return true;\n"
+       << "}\n\n";
 
     ss << "// Simple JSON parser helpers\n"
        << "std::string getJSONVal(const std::string& json, const std::string& field) {\n"
@@ -1805,8 +1914,29 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     }
     ss << "}\n\n";
 
+    for (const auto& job : program->jobs) {
+        ss << "struct Job_" << job->name << ";\n";
+    }
+    if (!program->jobs.empty()) ss << "\n";
+
     for (const auto& slice : program->slices) {
         ss << generateSlice(slice) << "\n";
+    }
+
+    for (const auto& job : program->jobs) {
+        ss << generateJob(job) << "\n";
+    }
+
+    ss << "// Action Implementations\n";
+    for (const auto& slice : program->slices) {
+        for (const auto& action : slice->actions) {
+            ss << generateActionImpl(slice->name, action) << "\n";
+        }
+    }
+    for (const auto& job : program->jobs) {
+        for (const auto& action : job->actions) {
+            ss << generateActionImpl("Job_" + job->name, action) << "\n";
+        }
     }
 
     ss << "// Raw UI View HTML Pages\n";
@@ -1825,6 +1955,10 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     if (includeMain) {
         ss << "int main() {\n";
         ss << "    initDatabase();\n";
+        ss << "    // Spawn worker threads for background jobs\n";
+        ss << "    for (int i = 0; i < 4; ++i) {\n";
+        ss << "        std::thread(job_worker_thread).detach();\n";
+        ss << "    }\n";
         ss << "    int server_fd, client_fd;\n";
         ss << "    struct sockaddr_in address;\n";
         ss << "    int opt = 1;\n";
@@ -1844,7 +1978,57 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "    while (true) {\n";
         ss << "        if ((client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) continue;\n";
         ss << "        std::string req = readHttpRequest(client_fd);\n";
-        ss << "        if (!req.empty()) {\n";        
+        ss << "        if (!req.empty()) {\n";
+        if (hasCors) {
+            ss << "            if (req.rfind(\"OPTIONS \", 0) == 0) {\n";
+            ss << "                std::stringstream resp;\n";
+            ss << "                resp << \"HTTP/1.1 204 No Content\\r\\n\"\n";
+            ss << "                     << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+            ss << "                     << \"Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\\r\\n\"\n";
+            ss << "                     << \"Access-Control-Allow-Headers: Content-Type, Authorization\\r\\n\"\n";
+            ss << "                     << \"Content-Length: 0\\r\\n\\r\\n\";\n";
+            ss << "                send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+            ss << "                close(client_fd);\n";
+            ss << "                continue;\n";
+            ss << "            }\n";
+        }
+        if (hasRateLimit) {
+            ss << "            bool is_api_req = (req.find(\"/api/\") != std::string::npos);\n";
+            if (!program->apis.empty()) {
+                ss << "            if (!is_api_req) {\n";
+                for (const auto& r : program->apis[0]->routes) {
+                    if (r->method != "WEBSOCKET") {
+                        ss << "                {\n";
+                        ss << "                    size_t pos = req.find(\" \" \"" << r->path << "\");\n";
+                        ss << "                    if (pos != std::string::npos) {\n";
+                        ss << "                        char next_char = req[pos + " << (r->path.length() + 1) << "];\n";
+                        ss << "                        if (next_char == ' ' || next_char == '?' || next_char == '/') is_api_req = true;\n";
+                        ss << "                    }\n";
+                        ss << "                }\n";
+                    }
+                }
+                ss << "            }\n";
+            }
+            ss << "            if (is_api_req) {\n";
+            ss << "                std::string client_ip = inet_ntoa(address.sin_addr);\n";
+            ss << "                if (!check_rate_limit(client_ip, " << rateLimitLimit << ", " << rateLimitWindow << ")) {\n";
+            ss << "                    std::string msg = \"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"Rate limit exceeded. Try again later.\\\"}\";\n";
+            ss << "                    std::stringstream resp;\n";
+            ss << "                    resp << \"HTTP/1.1 429 Too Many Requests\\r\\n\"\n";
+            ss << "                         << \"Content-Type: application/json\\r\\n\"\n";
+            ss << "                         << \"Access-Control-Allow-Origin: *\\r\\n\";\n";
+            if (hasCors) {
+                ss << "                    resp << \"Access-Control-Allow-Methods: *\\r\\n\"\n";
+                ss << "                         << \"Access-Control-Allow-Headers: *\\r\\n\";\n";
+            }
+            ss << "                    resp << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\"\n";
+            ss << "                         << msg;\n";
+            ss << "                    send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+            ss << "                    close(client_fd);\n";
+            ss << "                    continue;\n";
+            ss << "                }\n";
+            ss << "            }\n";
+        }
         ss << "            bool wsUpgraded = false;\n";
         ss << "            std::string upgradeHeader = getHeaderValue(req, \"Upgrade\");\n";
         ss << "            for (char &c : upgradeHeader) { if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a'; }\n";

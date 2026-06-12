@@ -10,8 +10,9 @@ private:
     std::string generateExpression(std::shared_ptr<ASTExpression> expr);
     std::string generateStatement(std::shared_ptr<ASTStatement> stmt);
     std::string generateField(std::shared_ptr<ASTField> field);
-    std::string generateAction(std::shared_ptr<ASTAction> action);
+    std::string generateActionImpl(const std::string& className, std::shared_ptr<ASTAction> action);
     std::string generateSlice(std::shared_ptr<ASTSlice> slice);
+    std::string generateJob(std::shared_ptr<ASTJob> job);
     std::string generateHTMLContent(std::shared_ptr<ASTView> view);
 
 public:

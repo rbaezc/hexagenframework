@@ -292,6 +292,51 @@ This works out of the box across all supported engines (JSONL, SQLite, and Postg
     **Configuration:**
     The validation signature uses a secret key loaded from your `.env` file via `JWT_SECRET`. If no secret is configured, a default fallback is used.
 
+
+### 4. API Middlewares & Asynchronous Background Jobs
+Hexagen natively supports API-level middleware directives and asynchronous background processing.
+
+#### API Middlewares
+Within an `api` block, you can register global middlewares using the `use` directive:
+*   **CORS (`use cors`):** Natively handles HTTP `OPTIONS` preflight requests, injecting standard permissive headers (`Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: *`, etc.) across all dynamic endpoints.
+*   **IP-Based Rate Limiting (`use rate_limit(limit, window)`):** Tracks client IPs using standard thread-safe mappings (without external memory store engines like Redis) and blocks clients with a `429 Too Many Requests` response when the maximum request budget is reached within the specified window (in seconds).
+
+```prolog
+api MyApi {
+    use cors
+    use rate_limit(100, 60) // Limit to 100 requests per 60 seconds
+
+    route "/items" GET -> Inventory.List
+}
+```
+
+#### Asynchronous Background Jobs
+Background job execution allows long-running/heavy tasks (such as sending emails, auditing actions, or heavy computational tasks) to be processed asynchronously by a worker pool without blocking the main web server's request-response loop.
+*   **Job Syntax:** Defined using the `job` block, supporting fields and an action `Run`.
+*   **Enqueue Syntax:** Enqueue a task asynchronously using `enqueue JobName(field1: val1, field2: val2)`.
+
+```prolog
+job SendNotification {
+    field userId: int
+    field message: string
+
+    action Run() {
+        print("Sending message to user: " + message)
+    }
+}
+
+slice Order {
+    field orderId: int
+
+    action Create() {
+        print("Creating order")
+        enqueue SendNotification(userId: 1, message: "Your order has been created!")
+    }
+}
+```
+
+Behind the scenes, Hexagen transpiles jobs into C++ structs and automatically spins up a thread-safe task worker pool (`std::thread`, `std::mutex`, `std::condition_variable`) to execute enqueued tasks in parallel.
+
 ### 5. Multipart File Uploads & Static File Serving
 Hexagen natively supports `multipart/form-data` uploads for handling media (such as food dish photos in a restaurant API). 
 

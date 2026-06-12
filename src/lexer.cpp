@@ -177,6 +177,9 @@ std::vector<Token> Lexer::tokenize() {
             else if (ident == "GET") type = TokenType::HTTP_GET;
             else if (ident == "POST") type = TokenType::HTTP_POST;
             else if (ident == "DELETE" || ident == "delete") type = TokenType::HTTP_DELETE;
+            else if (ident == "job") type = TokenType::JOB;
+            else if (ident == "enqueue") type = TokenType::ENQUEUE;
+            else if (ident == "use") type = TokenType::USE;
 
             tokens.push_back({type, ident, startLine, startCol});
             continue;

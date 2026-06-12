@@ -50,6 +50,9 @@ enum class TokenType {
     ELSE,
     WHILE,
     CONFIG, // "config"
+    JOB,
+    ENQUEUE,
+    USE,
 
     // Types
     TYPE_INT,
@@ -110,6 +113,9 @@ inline std::string tokenTypeToString(TokenType type) {
         case TokenType::ELSE: return "else";
         case TokenType::WHILE: return "while";
         case TokenType::CONFIG: return "config";
+        case TokenType::JOB: return "job";
+        case TokenType::ENQUEUE: return "enqueue";
+        case TokenType::USE: return "use";
         case TokenType::TYPE_INT: return "int";
         case TokenType::TYPE_STRING: return "string";
         case TokenType::TYPE_FLOAT: return "float";

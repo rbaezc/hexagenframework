@@ -7,10 +7,20 @@ slice Inventario {
     
     action Agregar() {
         print("C++ Core ejecutó: Inventario.Agregar()")
+        enqueue ProcessOrder(orderId: 42)
     }
     
     action Eliminar() {
         print("C++ Core ejecutó: Inventario.Eliminar()")
+    }
+}
+
+// Job de Segundo Plano
+job ProcessOrder {
+    field orderId: int
+    
+    action Run() {
+        print("Trabajador ejecutando ProcessOrder para orderId")
     }
 }
 
@@ -32,6 +42,9 @@ view Config {
 
 // Define el enrutamiento HTTP REST seguro (Pillar 3)
 api Rest {
+    use cors
+    use rate_limit(3, 10)
+    
     secure route "/process" POST -> Inventario.Agregar
     secure route "/eliminar" DELETE -> Inventario.Eliminar
 }

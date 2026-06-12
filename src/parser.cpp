@@ -11,6 +11,8 @@ std::shared_ptr<ASTProgram> Parser::parse() {
             program->apis.push_back(parseApi());
         } else if (check(TokenType::CONFIG)) {
             parseConfig(program);
+        } else if (check(TokenType::JOB)) {
+            program->jobs.push_back(parseJob());
         } else {
             const auto& tok = peek();
             throw std::runtime_error("Unexpected token '" + tok.value + "' at root level, line " + std::to_string(tok.line));
@@ -95,7 +97,35 @@ std::shared_ptr<ASTAction> Parser::parseAction() {
 }
 
 std::shared_ptr<ASTStatement> Parser::parseStatement() {
-    if (match(TokenType::PRINT)) {
+    if (match(TokenType::ENQUEUE)) {
+        const auto& jobTok = peek();
+        consume(TokenType::IDENTIFIER, "Expected job identifier after 'enqueue'");
+        std::string jobName = jobTok.value;
+        
+        consume(TokenType::LPAREN, "Expected '(' after job name in enqueue statement");
+        auto enqueue = std::make_shared<ASTEnqueueStatement>(jobName);
+        
+        if (!check(TokenType::RPAREN)) {
+            while (!check(TokenType::RPAREN) && !check(TokenType::END_OF_FILE)) {
+                const auto& fieldTok = peek();
+                consume(TokenType::IDENTIFIER, "Expected field name in enqueue arguments");
+                std::string fieldName = fieldTok.value;
+                
+                consume(TokenType::COLON, "Expected ':' after field name in enqueue argument");
+                auto valExpr = parseExpression();
+                
+                enqueue->arguments.push_back({fieldName, valExpr});
+                
+                if (check(TokenType::COMMA)) {
+                    advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        consume(TokenType::RPAREN, "Expected ')' after enqueue arguments");
+        return enqueue;
+    } else if (match(TokenType::PRINT)) {
         consume(TokenType::LPAREN, "Expected '(' after 'print'");
         auto expr = parseExpression();
         consume(TokenType::RPAREN, "Expected ')' after print expression");
@@ -240,6 +270,10 @@ std::shared_ptr<ASTApi> Parser::parseApi() {
     auto api = std::make_shared<ASTApi>(apiName);
 
     while (!check(TokenType::RBRACE) && !check(TokenType::END_OF_FILE)) {
+        if (check(TokenType::USE)) {
+            api->middlewares.push_back(parseMiddleware());
+            continue;
+        }
         bool isSecure = false;
         if (match(TokenType::SECURE)) {
             isSecure = true;
@@ -357,4 +391,56 @@ void Parser::parseConfig(std::shared_ptr<ASTProgram> program) {
         }
     }
     consume(TokenType::RBRACE, "Expected '}' to close config block");
+}
+
+std::shared_ptr<ASTJob> Parser::parseJob() {
+    consume(TokenType::JOB, "Expected 'job'");
+    const auto& nameTok = peek();
+    consume(TokenType::IDENTIFIER, "Expected job identifier");
+    std::string jobName = nameTok.value;
+
+    consume(TokenType::LBRACE, "Expected '{' to start job body");
+
+    auto job = std::make_shared<ASTJob>(jobName);
+
+    while (!check(TokenType::RBRACE) && !check(TokenType::END_OF_FILE)) {
+        if (check(TokenType::FIELD)) {
+            job->fields.push_back(parseField());
+        } else if (check(TokenType::ACTION)) {
+            job->actions.push_back(parseAction());
+        } else {
+            const auto& tok = peek();
+            throw std::runtime_error("Unexpected token '" + tok.value + "' inside job '" + jobName + "', line " + std::to_string(tok.line));
+        }
+    }
+
+    consume(TokenType::RBRACE, "Expected '}' to close job body");
+    return job;
+}
+
+std::shared_ptr<ASTMiddleware> Parser::parseMiddleware() {
+    consume(TokenType::USE, "Expected 'use'");
+    const auto& nameTok = peek();
+    consume(TokenType::IDENTIFIER, "Expected middleware identifier");
+    std::string mwName = nameTok.value;
+
+    std::vector<std::string> args;
+    if (match(TokenType::LPAREN)) {
+        while (!check(TokenType::RPAREN) && !check(TokenType::END_OF_FILE)) {
+            const auto& argTok = peek();
+            if (check(TokenType::INT_LITERAL) || check(TokenType::IDENTIFIER) || check(TokenType::STRING_LITERAL)) {
+                advance();
+                args.push_back(argTok.value);
+            } else {
+                throw std::runtime_error("Unexpected token in middleware arguments: " + argTok.value + " at line " + std::to_string(argTok.line));
+            }
+            if (check(TokenType::COMMA)) {
+                advance();
+            } else {
+                break;
+            }
+        }
+        consume(TokenType::RPAREN, "Expected ')' to close middleware arguments");
+    }
+    return std::make_shared<ASTMiddleware>(mwName, args);
 }
