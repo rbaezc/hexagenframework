@@ -305,6 +305,33 @@ int main(int argc, char* argv[]) {
         SecurityAnalyzer analyzer(program, tokens);
         analyzer.analyzeAST();
 
+        if (command == "schema") {
+            std::cout << "{\n";
+            for (size_t i = 0; i < program->slices.size(); ++i) {
+                const auto& slice = program->slices[i];
+                std::cout << "  \"" << slice->name << "\": {\n";
+                for (size_t j = 0; j < slice->fields.size(); ++j) {
+                    const auto& field = slice->fields[j];
+                    std::string typeStr;
+                    if (field->type == DataType::INT) typeStr = "int";
+                    else if (field->type == DataType::FLOAT) typeStr = "float";
+                    else if (field->type == DataType::STRING) typeStr = "string";
+                    else if (field->type == DataType::BOOL) typeStr = "bool";
+                    else if (field->type == DataType::RELATION) typeStr = "relation(" + field->relatedSlice + ")";
+                    else typeStr = "unknown";
+                    
+                    std::cout << "    \"" << field->name << "\": \"" << typeStr << "\"";
+                    if (j + 1 < slice->fields.size()) std::cout << ",";
+                    std::cout << "\n";
+                }
+                std::cout << "  }";
+                if (i + 1 < program->slices.size()) std::cout << ",";
+                std::cout << "\n";
+            }
+            std::cout << "}\n";
+            return 0;
+        }
+
         CodeGenerator codegen(program);
         std::string cppCode = codegen.generateSourceCode(true);
 

@@ -219,6 +219,27 @@ You can test the security restrictions of secure routes (annotated with `secure`
 
 ---
 
+### Step 7: Database Schema Migrations (Pillar 2 / Phase 2)
+Hexagen has an integrated database migrations engine that compares your local `.hx` files with your last saved schema snapshot to generate incremental SQL migration scripts (`.up.sql` and `.down.sql`) and applies them safely:
+
+*   **Generate an incremental migration (diff):**
+    ```bash
+    hf db diff .
+    ```
+    This compares your current `.hx` files with `db/schema.json` and generates timestamped migration scripts under `db/migrations/` (e.g. `20260612122544_migration.up.sql` and `20260612122544_migration.down.sql`).
+*   **Run pending migrations:**
+    ```bash
+    hf db migrate .
+    ```
+    This compiles a C++ database migration tool on the fly, connects to your database, and executes all unapplied migrations sequentially.
+*   **Rollback the last migration:**
+    ```bash
+    hf db rollback .
+    ```
+    This applies the `.down.sql` commands of the last applied migration version and updates the tracking history.
+
+---
+
 ## 🛠️ Advanced Features
 
 ### 1. Multi-view and Built-in Redirection

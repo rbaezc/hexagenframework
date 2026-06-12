@@ -218,6 +218,27 @@ Puedes probar las restricciones de seguridad de las rutas seguras (anotadas con 
 
 ---
 
+### Paso 7: Migraciones de Esquema de Base de Datos (Pilar 2 / Fase 2)
+Hexagen cuenta con un motor de migraciones de base de datos integrado que compara tus archivos locales `.hx` con tu última captura del esquema para generar scripts de migración SQL incrementales (`.up.sql` y `.down.sql`) y aplicarlos de forma segura:
+
+*   **Generar una migración incremental (diff):**
+    ```bash
+    hf db diff .
+    ```
+    Compara tus archivos `.hx` actuales con `db/schema.json` y genera scripts de migración con marca de tiempo en `db/migrations/` (por ejemplo, `20260612122544_migration.up.sql` y `20260612122544_migration.down.sql`).
+*   **Ejecutar migraciones pendientes:**
+    ```bash
+    hf db migrate .
+    ```
+    Compila en caliente una herramienta de migración de base de datos en C++, se conecta a tu base de datos y ejecuta todas las migraciones no aplicadas secuencialmente.
+*   **Revertir la última migración (rollback):**
+    ```bash
+    hf db rollback .
+    ```
+    Aplica los comandos del archivo `.down.sql` correspondientes a la última versión de migración aplicada y actualiza el historial de seguimiento.
+
+---
+
 ## 🛠️ Funcionalidades Avanzadas
 
 ### 1. Multi-vista y Redirección Integrada
