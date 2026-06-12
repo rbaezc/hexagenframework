@@ -243,20 +243,50 @@ Hexagen automatically exposes dynamic query filtering and pagination on all auto
 
 This works out of the box across all supported engines (JSONL, SQLite, and PostgreSQL/MySQL), implementing optimized runtime checks and parameterized queries to prevent SQL injections.
 
-### 4. Dynamic User Authentication & Cryptographic Session Tokens
-If a slice representing users (named exactly `Usuario` or `User`) is declared in your Hexagen code (with an email/correo/username field and a contrasena/password/clave field), Hexagen automatically exposes:
-*   **`POST /api/signup`**: Standard user registration. It hashes the password securely using SHA-256 before persisting it to the database.
-*   **`POST /api/login`**: User authentication. If credentials are correct, it generates and returns a tamper-proof session token.
+*   **Dynamic User Authentication & Cryptographic Session Tokens:**
+    If a slice representing users (named exactly `Usuario` or `User`) is declared in your Hexagen code (with an email/correo/username field and a contrasena/password/clave field), Hexagen automatically exposes:
+    *   **`POST /api/signup`**: Standard user registration. It hashes the password securely using SHA-256 before persisting it to the database.
+    *   **`POST /api/login`**: User authentication. If credentials are correct, it generates and returns a tamper-proof session token.
+    
+    **Session Token Schema:**
+    To preserve a zero-dependency architecture (avoiding heavy external cryptographical bindings like OpenSSL), session tokens are generated using the following secure schema:
+    `Base64URL(payload) + "." + SHA256(Base64URL(payload) + "." + secret)`
+    
+    **Configuration:**
+    The validation signature uses a secret key loaded from your `.env` file via `JWT_SECRET`. If no secret is configured, a default fallback is used.
 
-**Session Token Schema:**
-To preserve a zero-dependency architecture (avoiding heavy external cryptographical bindings like OpenSSL), session tokens are generated using the following secure schema:
-`Base64URL(payload) + "." + SHA256(Base64URL(payload) + "." + secret)`
+### 5. Multipart File Uploads & Static File Serving
+Hexagen natively supports `multipart/form-data` uploads for handling media (such as food dish photos in a restaurant API). 
 
-**Configuration:**
-The validation signature uses a secret key loaded from your `.env` file via `JWT_SECRET`. If no secret is configured, a default fallback is used.
+* **How it works:** When a POST request with `Content-Type: multipart/form-data` is sent to a slice action route, Hexagen's built-in multipart parser automatically processes the file fields, saves them locally inside the `public/uploads/` directory with a unique timestamp prefix (to prevent name collisions), and writes the file's path (e.g. `/public/uploads/1715694200_dish.png`) directly to the slice database record.
+* **Static Serving:** The compiled server automatically acts as a high-performance static file server under the `/public/uploads/*` route, detecting and assigning correct image MIME headers (`image/png`, `image/jpeg`, `image/gif`) dynamically.
+
+### 6. WebSockets for Real-Time Notifications
+Bidirectional real-time sync is natively supported using the WebSocket protocol:
+* **Syntax:**
+  ```prolog
+  api RealtimeNotifier {
+      websocket "/pedidos-realtime" -> Cocina.NuevaOrden
+  }
+  ```
+* **Handshake & Protocol:** Hexagen implements the RFC 6455 WebSocket handshake natively in C++ using custom SHA-1 and Base64 routines. It decodes incoming client-to-server text frames (managing XOR masking) and encodes server-to-client frames without external networking libraries.
+* **Sync & Broadcast:** 
+  * Active client connections are kept in a thread-safe pool.
+  * Whenever a client sends data over a WebSocket, Hexagen parses the JSON payload, populates the action's slice fields, saves it to the database, executes the C++ slice action, and broadcasts the client's payload to all other active WebSocket connections.
+  * **HTTP -> WebSocket Broadcast:** To enable real-time UI dashboards, whenever *any* standard HTTP POST action endpoint is triggered (e.g., creating a new order), the server automatically broadcasts an event notification payload `{"event": "action", "target": "Slice.Action"}` to all connected WebSocket clients.
+
+### 7. Static Security Analyzer & Sandbox Compiler
+To protect the Hexagen ecosystem against malicious contributions (like NPM/XZ-style supply chain attacks), the compiler includes an integrated **Security Inspector** that analyzes code in two phases:
+
+* **1. Lexical Security Checks (Before Parsing):**
+  * **Anti-Obfuscation:** Scans for obfuscated payloads (such as base64/hex blobs) by flagging string literals longer than 200 characters without spaces.
+  * **Anti-Shellcode:** Flags giant arrays of integers (>50 consecutive numbers separated only by commas) used to inject raw binary payloads.
+  * **System Sandbox:** Blocks direct memory operations and unauthorized network socket operations. Identifiers like `malloc`, `free`, `socket`, `connect`, `pthread_create`, `fork`, `execve`, or raw pointers (`*` syntax used for address manipulation) are forbidden and will abort compilation.
+* **2. AST Data Flow Taint Analysis (After Parsing):**
+  * **Anti-Command Injection:** Audits call arguments for functions executing system commands (`system`, `popen`, `exec`). The inspector ensures that arguments are static literal strings and never variables sourced from client HTTP requests.
+  * **Anti-Credential Leak:** Tracks sensitive variables (such as environment configuration fields or variables containing `pass`, `secret`, `key`, `token`, `auth`, `cred` in their names). If a tainted variable is passed to an exfiltration function (such as `curl`, `fetch`, `send`, or printed to console), the build is immediately rejected.
 
 ---
-
 
 ## 🛠️ Manual Compilation (Framework Contributors Only)
 If you want to modify the Hexagen compiler or compile it yourself instead of using the quick installation scripts, make sure you have Go installed and run:

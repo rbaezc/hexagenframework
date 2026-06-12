@@ -222,22 +222,61 @@ api Rest {
 Cuando el frontend realiza una solicitud DELETE con el identificador, el servidor C++ localiza la línea, la elimina de forma segura y reescribe la persistencia. Se añade automáticamente una columna con un botón interactivo **Eliminar**.
 
 ### 3. Parámetros de Consulta, Filtrado y Paginación
-Hexagen expone automáticamente capacidades de filtrado dinámico y paginación en todos los endpoints GET auto-generados para los slices (`/api/<NombreSlice>`).
+Hexagen expone automáticamente capacidades de filtrado dinámico y paginación en todos los endpoints GET auto-generados para los slices (`/api/<NombreSlice>`). Puedes enviar cadenas de consulta (query strings) para realizar consultas parametrizadas seguras:
 
-*   **Filtrado:** `curl -i http://localhost:8080/api/Plato?categoria_id=3`
-*   **Paginación:** `curl -i http://localhost:8080/api/Plato?_limit=10&_offset=20`
+*   **Filtrado de Campos:** Filtra resultados haciendo coincidir campos de los slices.
+    ```bash
+    curl -i http://localhost:8080/api/Plato?categoria_id=3&disponible=true
+    ```
+*   **Paginación:** Limita y desplaza los resultados utilizando los parámetros de consulta `_limit` y `_offset`.
+    ```bash
+    curl -i http://localhost:8080/api/Plato?_limit=10&_offset=20
+    ```
 
-### 4. Autenticación Dinámica de Usuarios y Tokens de Sesión Criptográficos
-Si se declara un slice que representa usuarios (llamado exactamente `Usuario` o `User`) en tu código Hexagen (con un campo email/correo/username y un campo contrasena/password/clave), Hexagen expone automáticamente:
-*   **`POST /api/signup`**: Registro estándar de usuarios. Aplica un hash seguro a la contraseña usando SHA-256 antes de persistirla en la base de datos.
-*   **`POST /api/login`**: Autenticación de usuarios. Si las credenciales son correctas, genera y devuelve un token de sesión inmune a manipulaciones.
+Esto funciona de forma predeterminada en todos los motores compatibles (JSONL, SQLite y PostgreSQL/MySQL), implementando comprobaciones en tiempo de ejecución optimizadas y consultas parametrizadas para evitar inyecciones SQL.
 
-**Esquema de Tokens de Sesión:**
-Para mantener una arquitectura libre de dependencias, los tokens de sesión se generan bajo el siguiente esquema seguro:
-`Base64URL(payload) + "." + SHA256(Base64URL(payload) + "." + secreto)`
+*   **Autenticación Dinámica de Usuarios y Tokens de Sesión Criptográficos:**
+    Si se declara un slice que representa usuarios (llamado exactamente `Usuario` o `User`) en tu código Hexagen (con un campo email/correo/username y un campo contrasena/password/clave), Hexagen expone automáticamente:
+    *   **`POST /api/signup`**: Registro estándar de usuarios. Aplica un hash seguro a la contraseña usando SHA-256 antes de persistirla en la base de datos.
+    *   **`POST /api/login`**: Autenticación de usuarios. Si las credenciales son correctas, genera y devuelve un token de sesión inmune a manipulaciones.
+    
+    **Esquema de Tokens de Sesión:**
+    Para mantener una arquitectura libre de dependencias (evitando librerías externas pesadas de criptografía como OpenSSL), los tokens de sesión se generan bajo el siguiente esquema seguro:
+    `Base64URL(payload) + "." + SHA256(Base64URL(payload) + "." + secreto)`
+    
+    **Configuración:**
+    La firma de validación utiliza una clave secreta cargada desde tu archivo `.env` mediante la variable `JWT_SECRET`. Si no se configura ningún secreto, se utiliza un valor por defecto.
 
-**Configuración:**
-La firma de validación utiliza una clave secreta cargada desde tu archivo `.env` mediante la variable `JWT_SECRET`. Si no se configura ningún secreto, se utiliza un valor por defecto.
+### 5. Subida de Archivos Multipart y Servidor Estático
+Hexagen admite de forma nativa la subida de archivos tipo `multipart/form-data` para manejar archivos multimedia (como fotos de platos de comida en una API de restaurante).
+
+* **Cómo funciona:** Cuando se envía una solicitud POST con `Content-Type: multipart/form-data` a una ruta de acción de un slice, el parser multipart incorporado de Hexagen procesa automáticamente los campos del archivo, los guarda localmente en el directorio `public/uploads/` con un prefijo de timestamp único (para evitar colisiones de nombres), y escribe la ruta del archivo (por ejemplo, `/public/uploads/1715694200_dish.png`) directamente en el registro correspondiente de la base de datos.
+* **Servidor Estático:** El servidor compilado actúa automáticamente como un servidor de archivos estáticos de alto rendimiento bajo la ruta `/public/uploads/*`, detectando y asignando las cabeceras MIME correctas para imágenes (`image/png`, `image/jpeg`, `image/gif`) de forma dinámica.
+
+### 6. WebSockets para Tiempo Real
+Se admite de forma nativa la sincronización bidireccional en tiempo real utilizando el protocolo WebSocket:
+* **Sintaxis:**
+  ```prolog
+  api RealtimeNotifier {
+      websocket "/pedidos-realtime" -> Cocina.NuevaOrden
+  }
+  ```
+* **Handshake y Protocolo:** Hexagen implementa el handshake de WebSockets (RFC 6455) de forma nativa en C++ utilizando rutinas personalizadas de SHA-1 y Base64. Decodifica los frames de texto entrantes de cliente a servidor (gestionando el enmascaramiento XOR) y codifica los frames de servidor a cliente sin depender de librerías de red externas.
+* **Sincronización y Difusión (Broadcast):**
+  * Las conexiones activas de los clientes se mantienen en un pool seguro para subprocesos (thread-safe).
+  * Cada vez que un cliente envía datos a través de un WebSocket, Hexagen parsea la carga útil JSON, rellena los campos de la acción del slice, los guarda en la base de datos, ejecuta la acción en C++ y difunde los datos recibidos a todas las demás conexiones WebSocket activas.
+  * **Difusión de HTTP a WebSocket:** Para permitir paneles de usuario en tiempo real, cada vez que se activa *cualquier* endpoint de acción HTTP POST estándar (por ejemplo, al crear un nuevo pedido), el servidor difunde automáticamente un evento de notificación `{"event": "action", "target": "Slice.Action"}` a todos los clientes WebSocket conectados.
+
+### 7. Analizador Estático de Seguridad y Compilador Sandbox
+Para proteger el ecosistema de Hexagen contra contribuciones maliciosas (como ataques de cadena de suministro al estilo NPM/XZ), el compilador incluye un **Inspector de Seguridad** integrado que analiza el código en dos fases:
+
+* **1. Comprobaciones de Seguridad Léxicas (Antes del Parsing):**
+  * **Anti-Ofuscación:** Escanea en busca de cargas útiles ofuscadas (como bloques en base64 o hexadecimal) marcando cadenas literales de más de 200 caracteres sin espacios.
+  * **Anti-Shellcode:** Detecta y bloquea arrays gigantes de enteros (más de 50 números consecutivos separados únicamente por comas) utilizados comúnmente para inyectar cargas binarias crudas.
+  * **Sandbox del Sistema:** Bloquea operaciones directas de memoria y sockets de red no autorizados. El uso de identificadores como `malloc`, `free`, `socket`, `connect`, `pthread_create`, `fork`, `execve` o punteros directos (sintaxis `*` utilizada para manipulación de direcciones) está estrictamente prohibido y abortará la compilación.
+* **2. Análisis de Flujo de Datos y Taint Analysis en el AST (Después del Parsing):**
+  * **Anti-Inyección de Comandos:** Audita los argumentos de llamadas a funciones que ejecutan comandos del sistema (`system`, `popen`, `exec`). El inspector asegura que los argumentos sean cadenas literales estáticas y nunca variables provenientes de peticiones HTTP de clientes.
+  * **Anti-Filtración de Credenciales:** Rastreará variables sensibles (tales como campos de configuración de entorno o variables que contengan `pass`, `secret`, `key`, `token`, `auth`, `cred` en sus nombres). Si una variable marcada (tainted) se pasa a una función de exfiltración (como `curl`, `fetch`, `send` o se imprime en la consola), la compilación se rechaza de inmediato.
 
 ---
 
