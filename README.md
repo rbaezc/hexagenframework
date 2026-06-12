@@ -46,10 +46,12 @@ Hexagen supports configuring your database engine globally using the `config` bl
 *   `mysql`: Remote MySQL / MariaDB relational database engine.
 
 ### How to Configure
-1.  **Define the Engine in your `.hx` file:**
+1.  **Define the Engine and Frontend in your `.hx` file:**
     ```prolog
     config {
         database: postgres
+        frontend: react     # Optional: vanilla (default) or react
+        css: tailwind       # Optional: vanilla (default) or tailwind
     }
     
     slice Tareas {
@@ -367,6 +369,14 @@ To protect the Hexagen ecosystem against malicious contributions (like NPM/XZ-st
 * **2. AST Data Flow Taint Analysis (After Parsing):**
   * **Anti-Command Injection:** Audits call arguments for functions executing system commands (`system`, `popen`, `exec`). The inspector ensures that arguments are static literal strings and never variables sourced from client HTTP requests.
   * **Anti-Credential Leak:** Tracks sensitive variables (such as environment configuration fields or variables containing `pass`, `secret`, `key`, `token`, `auth`, `cred` in their names). If a tainted variable is passed to an exfiltration function (such as `curl`, `fetch`, `send`, or printed to console), the build is immediately rejected.
+
+### 8. Modern React + Tailwind CSS Scaffolding & SPA Static Hosting
+If you specify `frontend: react` and `css: tailwind` in the `config` block of your `.hx` file, Hexagen compiles your UI views into a modern React + TypeScript single-page application (SPA):
+
+* **Auto-Scaffolding:** On the first compilation/transpilation, Hexagen scaffolds a complete Vite + React + TypeScript + Tailwind CSS project inside a `frontend/` directory (including `package.json`, `tsconfig.json`, `vite.config.ts`, and styling setups).
+* **View-to-Component Compiler:** Translates each `.hx` `view` block into an individual React page component under `frontend/src/pages/` (generating state variables for inputs/tables, dynamic event handlers for button action calls, navigation links, and styled dynamic tables with delete actions).
+* **High-Performance C++ Static SPA Host:** The compiled C++ web server hosts the static SPA directly. It serves the bundled assets from `frontend/dist/` with the appropriate MIME content-types. For any non-API client router requests (e.g. `/inventario`), the server falls back to `frontend/dist/index.html` to allow `react-router-dom` to take over client-side routing, while forwarding `/api/*` and WebSocket connections to the C++ controller.
+* **Cached Node Modules Optimization:** The transpiler avoids running redundant, slow package installs by checking if `frontend/node_modules/` exists. It runs subsequent incremental Vite builds in less than two seconds.
 
 ---
 

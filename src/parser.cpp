@@ -386,6 +386,14 @@ void Parser::parseConfig(std::shared_ptr<ASTProgram> program) {
             const auto& valTok = peek();
             consume(TokenType::IDENTIFIER, "Expected database type identifier (e.g., jsonl, postgres, mysql, sqlite)");
             program->dbType = valTok.value;
+        } else if (keyTok.value == "frontend") {
+            const auto& valTok = peek();
+            consume(TokenType::IDENTIFIER, "Expected frontend type identifier (e.g., vanilla, react, svelte)");
+            program->frontend = valTok.value;
+        } else if (keyTok.value == "css") {
+            const auto& valTok = peek();
+            consume(TokenType::IDENTIFIER, "Expected CSS type identifier (e.g., vanilla, tailwind)");
+            program->css = valTok.value;
         } else {
             advance(); // consume value
         }

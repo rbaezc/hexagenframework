@@ -246,6 +246,7 @@ int main(int argc, char* argv[]) {
                     std::string cppCode = codegen.generateSourceCode(true);
                     currentDbType = program->dbType;
 
+
                     std::ofstream tempFile(tempCppFile);
                     if (!tempFile.is_open()) {
                         std::cerr << "Error: Could not write temporary code file." << std::endl;
@@ -366,6 +367,8 @@ int main(int argc, char* argv[]) {
             if (program->dbType == "sqlite") dbFlags = " -lsqlite3";
             else if (program->dbType == "postgres" || program->dbType == "postgresql") dbFlags = " -lpq";
             else if (program->dbType == "mysql") dbFlags = " -lmysqlclient";
+
+
 
             std::string compileCmd = "g++ -std=c++17 " + tempCppFile + " -o " + outputExe + " -pthread" + dbFlags;
             std::cout << "[Hexagen] Compiling generated C++ code: " << compileCmd << "\n";

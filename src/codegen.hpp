@@ -14,6 +14,8 @@ private:
     std::string generateSlice(std::shared_ptr<ASTSlice> slice);
     std::string generateJob(std::shared_ptr<ASTJob> job);
     std::string generateHTMLContent(std::shared_ptr<ASTView> view);
+    void generateReactFrontend();
+    void generateReactPage(std::shared_ptr<ASTView> view);
 
 public:
     CodeGenerator(std::shared_ptr<ASTProgram> program) : program(program) {}

@@ -2,6 +2,8 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 
 std::string CodeGenerator::generateExpression(std::shared_ptr<ASTExpression> expr) {
     if (auto literal = std::dynamic_pointer_cast<ASTLiteral>(expr)) {
@@ -1112,7 +1114,464 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
     return ss.str();
 }
 
+void CodeGenerator::generateReactFrontend() {
+    namespace fs = std::filesystem;
+    try {
+        fs::create_directories("frontend/src/pages");
+    } catch (...) {
+        std::cerr << "Error creating directory frontend/src/pages" << std::endl;
+        return;
+    }
+
+    // package.json
+    {
+        std::ofstream file("frontend/package.json");
+        if (file.is_open()) {
+            file << R"JSON({
+  "name": "hexagen-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.22.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.66",
+    "@types/react-dom": "^18.2.22",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.2.2",
+    "vite": "^5.2.0"
+  }
+})JSON";
+            file.close();
+        }
+    }
+
+    // tsconfig.json
+    {
+        std::ofstream file("frontend/tsconfig.json");
+        if (file.is_open()) {
+            file << R"JSON({
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["DOM", "DOM.Iterable", "ES2020"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src"]
+})JSON";
+            file.close();
+        }
+    }
+
+    // vite.config.ts
+    {
+        std::ofstream file("frontend/vite.config.ts");
+        if (file.is_open()) {
+            file << R"TS(import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 3000,
+    proxy: {
+      '/api': 'http://localhost:8080'
+    }
+  }
+});
+)TS";
+            file.close();
+        }
+    }
+
+    // tailwind.config.js
+    {
+        std::ofstream file("frontend/tailwind.config.js");
+        if (file.is_open()) {
+            file << R"JS(/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+)JS";
+            file.close();
+        }
+    }
+
+    // postcss.config.js
+    {
+        std::ofstream file("frontend/postcss.config.js");
+        if (file.is_open()) {
+            file << R"JS(export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+)JS";
+            file.close();
+        }
+    }
+
+    // index.html
+    {
+        std::ofstream file("frontend/index.html");
+        if (file.is_open()) {
+            file << R"HTML(<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hexagen React App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+)HTML";
+            file.close();
+        }
+    }
+
+    // src/main.tsx
+    {
+        std::ofstream file("frontend/src/main.tsx");
+        if (file.is_open()) {
+            file << R"TS(import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import './index.css';
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+);
+)TS";
+            file.close();
+        }
+    }
+
+    // src/index.css
+    {
+        std::ofstream file("frontend/src/index.css");
+        if (file.is_open()) {
+            file << R"CSS(@tailwind base;
+@tailwind components;
+@tailwind utilities;
+)CSS";
+            file.close();
+        }
+    }
+
+    // src/App.tsx
+    {
+        std::ofstream file("frontend/src/App.tsx");
+        if (file.is_open()) {
+            file << "import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';\n";
+            for (const auto& view : program->views) {
+                file << "import " << view->name << " from './pages/" << view->name << "';\n";
+            }
+            file << "\nexport default function App() {\n";
+            file << "    return (\n";
+            file << "        <Router>\n";
+            file << "            <Routes>\n";
+            if (!program->views.empty()) {
+                file << "                <Route path=\"/\" element={<" << program->views[0]->name << " />} />\n";
+            }
+            for (const auto& view : program->views) {
+                std::string pathLower = view->name;
+                std::transform(pathLower.begin(), pathLower.end(), pathLower.begin(), ::tolower);
+                file << "                <Route path=\"/" << pathLower << "\" element={<" << view->name << " />} />\n";
+            }
+            file << "            </Routes>\n";
+            file << "        </Router>\n";
+            file << "    );\n";
+            file << "}\n";
+            file.close();
+        }
+    }
+
+    // Generate each view
+    for (const auto& view : program->views) {
+        generateReactPage(view);
+    }
+
+    std::cerr << "[Hexagen] Building React frontend..." << std::endl;
+    if (!fs::exists("frontend/node_modules")) {
+        std::cerr << "[Hexagen] Installing frontend dependencies (npm install)..." << std::endl;
+        std::system("cd frontend && npm install >&2");
+    }
+    std::system("cd frontend && npm run build >&2");
+}
+
+void CodeGenerator::generateReactPage(std::shared_ptr<ASTView> view) {
+    std::ofstream file("frontend/src/pages/" + view->name + ".tsx");
+    if (!file.is_open()) return;
+
+    file << "import React, { useState, useEffect } from 'react';\n";
+    file << "import { useNavigate } from 'react-router-dom';\n\n";
+    file << "export default function " << view->name << "() {\n";
+    file << "    const navigate = useNavigate();\n";
+
+    // Detect inputs and create state variables
+    for (const auto& elem : view->elements) {
+        if (elem->type == "input") {
+            file << "    const [" << elem->name << ", set" << elem->name << "] = useState('');\n";
+        }
+    }
+
+    // Detect tables and create state variables and fetch triggers
+    for (const auto& elem : view->elements) {
+        if (elem->type == "table") {
+            file << "    const [" << elem->label << "Rows, set" << elem->label << "Rows] = useState<any[]>([]);\n";
+            file << "    const refresh" << elem->label << " = async () => {\n";
+            file << "        try {\n";
+            file << "            const res = await fetch('/api/" << elem->label << "');\n";
+            file << "            const data = await res.json();\n";
+            file << "            set" << elem->label << "Rows(data);\n";
+            file << "        } catch(err) {}\n";
+            file << "    };\n";
+        }
+    }
+
+    // Global result block state
+    file << "    const [result, setResult] = useState<any>(null);\n\n";
+
+    // useEffect to populate tables on mount
+    file << "    useEffect(() => {\n";
+    for (const auto& elem : view->elements) {
+        if (elem->type == "table") {
+            file << "        refresh" << elem->label << "();\n";
+        }
+    }
+    file << "    }, []);\n\n";
+
+    // Handle action click functions
+    for (const auto& elem : view->elements) {
+        if (elem->type == "button") {
+            size_t dotPos = elem->targetAction.find('.');
+            if (dotPos != std::string::npos) {
+                std::string sliceName = elem->targetAction.substr(0, dotPos);
+                std::string actionName = elem->targetAction.substr(dotPos + 1);
+                
+                file << "    const handle" << sliceName << "_" << actionName << " = async () => {\n";
+                file << "        const payload = {\n";
+                for (const auto& inputElem : view->elements) {
+                    if (inputElem->type == "input") {
+                        bool isNum = false;
+                        for (const auto& s : program->slices) {
+                            if (s->name == sliceName) {
+                                for (const auto& f : s->fields) {
+                                    if (f->name == inputElem->name && (f->type == DataType::INT || f->type == DataType::FLOAT || f->type == DataType::RELATION)) {
+                                        isNum = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (isNum) {
+                            file << "            " << inputElem->name << ": Number(" << inputElem->name << ") || 0,\n";
+                        } else {
+                            file << "            " << inputElem->name << ": " << inputElem->name << ",\n";
+                        }
+                    }
+                }
+                file << "        };\n";
+                file << "        try {\n";
+                file << "            const res = await fetch('/api/" << sliceName << "', {\n";
+                file << "                method: 'POST',\n";
+                file << "                headers: { 'Content-Type': 'application/json' },\n";
+                file << "                body: JSON.stringify(payload)\n";
+                file << "            });\n";
+                file << "            const data = await res.json();\n";
+                file << "            setResult(data);\n";
+                for (const auto& tbl : view->elements) {
+                    if (tbl->type == "table") {
+                        file << "            refresh" << tbl->label << "();\n";
+                    }
+                }
+                file << "        } catch(err) {}\n";
+                file << "    };\n\n";
+            }
+        }
+    }
+
+    // Delete actions
+    for (const auto& elem : view->elements) {
+        if (elem->type == "table") {
+            bool hasDeleteRoute = false;
+            std::string deleteEndpoint = "";
+            if (!program->apis.empty()) {
+                for (const auto& r : program->apis[0]->routes) {
+                    if (r->method == "DELETE") {
+                        size_t dotPos = r->targetAction.find('.');
+                        std::string targetSlice = (dotPos != std::string::npos) ? r->targetAction.substr(0, dotPos) : "";
+                        if (targetSlice == elem->label) {
+                            hasDeleteRoute = true;
+                            deleteEndpoint = r->path;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (hasDeleteRoute) {
+                std::string keyCol = elem->columns.empty() ? "id" : elem->columns[0];
+                file << "    const handleDelete_" << elem->label << " = async (idVal: any) => {\n";
+                file << "        if (!confirm('¿Seguro que deseas eliminar este registro?')) return;\n";
+                file << "        try {\n";
+                file << "            const res = await fetch('/api/" << elem->label << "', {\n";
+                file << "                method: 'DELETE',\n";
+                file << "                headers: { 'Content-Type': 'application/json' },\n";
+                file << "                body: JSON.stringify({ " << keyCol << ": idVal })\n";
+                file << "            });\n";
+                file << "            refresh" << elem->label << "();\n";
+                file << "        } catch(err) {}\n";
+                file << "    };\n\n";
+            }
+        }
+    }
+
+    // Render component
+    file << "    return (\n";
+    file << "        <div className=\"min-h-screen bg-[#0b0f19] text-[#f3f4f6] flex flex-col justify-center items-center relative overflow-hidden font-sans\">\n";
+    file << "            <div className=\"absolute w-[300px] h-[300px] bg-gradient-to-r from-[#00f2fe] to-transparent rounded-full top-[10%] left-[15%] opacity-15 blur-[80px]\" />\n";
+    file << "            <div className=\"absolute w-[350px] h-[350px] bg-gradient-to-r from-[#4facfe] to-transparent rounded-full bottom-[15%] right-[15%] opacity-15 blur-[80px]\" />\n";
+    file << "            \n";
+    file << "            <main className=\"w-full max-w-[550px] p-8 z-10\">\n";
+    file << "                <section className=\"bg-white/5 backdrop-blur-[20px] border border-white/10 rounded-[24px] p-10 shadow-[0_20px_50px_rgba(0,0,0,0.3)]\">\n";
+    file << "                    <div className=\"text-center mb-8\">\n";
+    
+    std::string mainTitle = view->name;
+    std::string subTitle = "Hexagen Compiled UI";
+    for (const auto& elem : view->elements) {
+        if (elem->type == "title") {
+            subTitle = elem->label;
+        }
+    }
+    file << "                        <h1 className=\"text-3xl font-extrabold bg-gradient-to-r from-white to-indigo-200 bg-clip-text text-transparent mb-2\">" << mainTitle << "</h1>\n";
+    file << "                        <p className=\"text-sm text-gray-400\">" << subTitle << "</p>\n";
+    file << "                    </div>\n";
+    
+    file << "                    <div className=\"space-y-6\">\n";
+
+    for (const auto& elem : view->elements) {
+        if (elem->type == "input") {
+            file << "                        <div>\n";
+            file << "                            <label className=\"block text-xs font-semibold uppercase text-gray-400 mb-2\">" << elem->name << "</label>\n";
+            file << "                            <input type=\"text\" value={" << elem->name << "} onChange={(e) => set" << elem->name << "(e.target.value)} className=\"w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00f2fe] focus:bg-white/10 transition\" />\n";
+            file << "                        </div>\n";
+        } else if (elem->type == "button") {
+            size_t dotPos = elem->targetAction.find('.');
+            if (dotPos != std::string::npos) {
+                std::string sliceName = elem->targetAction.substr(0, dotPos);
+                std::string actionName = elem->targetAction.substr(dotPos + 1);
+                file << "                        <button onClick={handle" << sliceName << "_" << actionName << "} className=\"w-full bg-gradient-to-r from-[#4facfe] to-[#00f2fe] text-[#0b0f19] py-4 rounded-xl font-bold hover:scale-[1.02] transition active:scale-[0.98]\">" << elem->label << "</button>\n";
+            } else {
+                std::string pathLower = elem->targetAction;
+                std::transform(pathLower.begin(), pathLower.end(), pathLower.begin(), ::tolower);
+                file << "                        <button onClick={() => navigate('/" << pathLower << "')} className=\"w-full bg-white/5 border border-white/10 py-4 rounded-xl font-bold hover:bg-white/10 transition\">" << elem->label << "</button>\n";
+            }
+        }
+    }
+    
+    file << "                    </div>\n";
+
+    file << "                    {result && (\n";
+    file << "                        <div className=\"mt-8 bg-black/25 rounded-xl border border-white/5 p-5\">\n";
+    file << "                            <div className=\"text-xs font-semibold text-[#00f2fe] mb-2 uppercase\">API Response</div>\n";
+    file << "                            <pre className=\"font-mono text-xs text-[#e5e7eb] overflow-x-auto\">{JSON.stringify(result, null, 2)}</pre>\n";
+    file << "                        </div>\n";
+    file << "                    )}\n";
+
+    for (const auto& elem : view->elements) {
+        if (elem->type == "table") {
+            bool hasDeleteRoute = false;
+            if (!program->apis.empty()) {
+                for (const auto& r : program->apis[0]->routes) {
+                    if (r->method == "DELETE") {
+                        size_t dotPos = r->targetAction.find('.');
+                        std::string targetSlice = (dotPos != std::string::npos) ? r->targetAction.substr(0, dotPos) : "";
+                        if (targetSlice == elem->label) {
+                            hasDeleteRoute = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            file << "                    <div className=\"mt-8 bg-black/20 rounded-xl border border-white/10 overflow-hidden\">\n";
+            file << "                        <table className=\"w-full text-left border-collapse\">\n";
+            file << "                            <thead>\n";
+            file << "                                <tr className=\"bg-white/5 text-xs font-semibold text-gray-400 uppercase\">\n";
+            for (const auto& col : elem->columns) {
+                file << "                                    <th className=\"p-3\">" << col << "</th>\n";
+            }
+            if (hasDeleteRoute) {
+                file << "                                    <th className=\"p-3\">Acciones</th>\n";
+            }
+            file << "                                </tr>\n";
+            file << "                            </thead>\n";
+            file << "                            <tbody>\n";
+            file << "                                {" << elem->label << "Rows.map((row: any, idx: number) => (\n";
+            file << "                                    <tr key={idx} className=\"border-b border-white/10\">\n";
+            for (const auto& col : elem->columns) {
+                file << "                                        <td className=\"p-3 text-sm\">{row." << col << "}</td>\n";
+            }
+            if (hasDeleteRoute) {
+                std::string keyCol = elem->columns.empty() ? "id" : elem->columns[0];
+                file << "                                        <td className=\"p-3 text-sm\">\n";
+                file << "                                            <button onClick={() => handleDelete_" << elem->label << "(row." << keyCol << ")} className=\"px-3 py-1 text-xs font-semibold rounded bg-gradient-to-r from-red-500 to-rose-600 text-white hover:scale-105 active:scale-95 transition\">Eliminar</button>\n";
+                file << "                                        </td>\n";
+            }
+            file << "                                    </tr>\n";
+            file << "                                ))}\n";
+            file << "                            </tbody>\n";
+            file << "                        </table>\n";
+            file << "                    </div>\n";
+        }
+    }
+
+    file << "                </section>\n";
+    file << "            </main>\n";
+    file << "        </div>\n";
+    file << "    );\n";
+    file << "}\n";
+}
+
 std::string CodeGenerator::generateSourceCode(bool includeMain) {
+    if (program->frontend == "react") {
+        generateReactFrontend();
+    }
     bool hasCors = false;
     bool hasRateLimit = false;
     int rateLimitLimit = 0;
@@ -1979,6 +2438,47 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "        if ((client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) continue;\n";
         ss << "        std::string req = readHttpRequest(client_fd);\n";
         ss << "        if (!req.empty()) {\n";
+        if (program->frontend == "react") {
+            ss << "            bool handled_static = false;\n";
+            ss << "            if (req.rfind(\"GET /\", 0) == 0 && req.rfind(\"GET /api/\", 0) != 0) {\n";
+            ss << "                size_t space = req.find(' ', 4);\n";
+            ss << "                std::string path = (space != std::string::npos) ? req.substr(4, space - 4) : \"\";\n";
+            ss << "                if (path == \"/\" || path.empty() || path.find(\".\") == std::string::npos) path = \"/index.html\";\n";
+            ss << "                std::string fullPath = \"frontend/dist\" + path;\n";
+            ss << "                std::ifstream file(fullPath, std::ios::binary);\n";
+            ss << "                if (!file.is_open() && path != \"/index.html\") {\n";
+            ss << "                    fullPath = \"frontend/dist/index.html\";\n";
+            ss << "                    file.open(fullPath, std::ios::binary);\n";
+            ss << "                }\n";
+            ss << "                if (file.is_open()) {\n";
+            ss << "                    file.seekg(0, std::ios::end);\n";
+            ss << "                    size_t size = file.tellg();\n";
+            ss << "                    file.seekg(0, std::ios::beg);\n";
+            ss << "                    std::vector<char> fileBuf(size);\n";
+            ss << "                    file.read(fileBuf.data(), size);\n";
+            ss << "                    file.close();\n";
+            ss << "                    std::string contentType = \"application/octet-stream\";\n";
+            ss << "                    if (fullPath.find(\".html\") != std::string::npos) contentType = \"text/html; charset=utf-8\";\n";
+            ss << "                    else if (fullPath.find(\".js\") != std::string::npos) contentType = \"application/javascript; charset=utf-8\";\n";
+            ss << "                    else if (fullPath.find(\".css\") != std::string::npos) contentType = \"text/css; charset=utf-8\";\n";
+            ss << "                    else if (fullPath.find(\".png\") != std::string::npos) contentType = \"image/png\";\n";
+            ss << "                    else if (fullPath.find(\".jpg\") != std::string::npos || fullPath.find(\".jpeg\") != std::string::npos) contentType = \"image/jpeg\";\n";
+            ss << "                    else if (fullPath.find(\".svg\") != std::string::npos) contentType = \"image/svg+xml\";\n";
+            ss << "                    else if (fullPath.find(\".json\") != std::string::npos) contentType = \"application/json\";\n";
+            ss << "                    std::stringstream resp;\n";
+            ss << "                    resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
+            ss << "                         << \"Content-Type: \" << contentType << \"\\r\\n\"\n";
+            ss << "                         << \"Content-Length: \" << size << \"\\r\\n\\r\\n\";\n";
+            ss << "                    send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+            ss << "                    send(client_fd, fileBuf.data(), size, 0);\n";
+            ss << "                    handled_static = true;\n";
+            ss << "                }\n";
+            ss << "            }\n";
+            ss << "            if (handled_static) {\n";
+            ss << "                close(client_fd);\n";
+            ss << "                continue;\n";
+            ss << "            }\n";
+        }
         if (hasCors) {
             ss << "            if (req.rfind(\"OPTIONS \", 0) == 0) {\n";
             ss << "                std::stringstream resp;\n";

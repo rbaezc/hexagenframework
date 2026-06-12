@@ -355,6 +355,8 @@ public:
 class ASTProgram : public ASTNode {
 public:
     std::string dbType = "jsonl"; // Default database type
+    std::string frontend = "vanilla"; // Default frontend type
+    std::string css = "vanilla";       // Default CSS type
     std::vector<std::shared_ptr<ASTSlice>> slices;
     std::vector<std::shared_ptr<ASTView>> views;
     std::vector<std::shared_ptr<ASTApi>> apis;

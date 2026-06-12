@@ -66,9 +66,10 @@ func runCore(args ...string) (string, error) {
 	}
 
 	cmd := exec.Command(corePath, args...)
-	output, err := cmd.CombinedOutput()
+	cmd.Stderr = os.Stderr
+	output, err := cmd.Output()
 	if err != nil {
-		return string(output), fmt.Errorf("hf_core execution failed: %v\nOutput: %s", err, string(output))
+		return string(output), fmt.Errorf("hf_core execution failed: %v", err)
 	}
 	return string(output), nil
 }

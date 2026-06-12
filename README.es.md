@@ -46,10 +46,12 @@ Hexagen admite configurar tu motor de base de datos de forma global usando el bl
 *   `mysql`: Conector para base de datos relacional MySQL / MariaDB en red.
 
 ### Cómo Configurar
-1.  **Define el motor en tu archivo `.hx`:**
+1.  **Define el motor y el frontend en tu archivo `.hx`:**
     ```prolog
     config {
         database: postgres
+        frontend: react     # Opcional: vanilla (por defecto) o react
+        css: tailwind       # Opcional: vanilla (por defecto) o tailwind
     }
     
     slice Tareas {
@@ -361,6 +363,14 @@ Para proteger el ecosistema de Hexagen contra contribuciones maliciosas (como at
 * **2. Análisis de Flujo de Datos y Taint Analysis en el AST (Después del Parsing):**
   * **Anti-Inyección de Comandos:** Audita los argumentos de llamadas a funciones que ejecutan comandos del sistema (`system`, `popen`, `exec`). El inspector asegura que los argumentos sean cadenas literales estáticas y nunca variables provenientes de peticiones HTTP de clientes.
   * **Anti-Filtración de Credenciales:** Rastreará variables sensibles (tales como campos de configuración de entorno o variables que contengan `pass`, `secret`, `key`, `token`, `auth`, `cred` en sus nombres). Si una variable marcada (tainted) se pasa a una función de exfiltración (como `curl`, `fetch`, `send` o se imprime en la consola), la compilación se rechaza de inmediato.
+
+### 8. Andamiaje Moderno React + Tailwind CSS y Alojamiento Estático SPA
+Si especificas `frontend: react` y `css: tailwind` en el bloque `config` de tu archivo `.hx`, Hexagen compila tus vistas de interfaz de usuario en una aplicación de página única (SPA) moderna basada en React + TypeScript:
+
+* **Andamiaje Automático (Auto-Scaffolding):** En la primera transpilación/compilación, Hexagen crea un proyecto completo Vite + React + TypeScript + Tailwind CSS dentro de una carpeta `frontend/` (incluyendo `package.json`, `tsconfig.json`, `vite.config.ts`, y todas las configuraciones de estilos).
+* **Compilador de Vista a Componente:** Convierte cada bloque `view` de `.hx` en un componente de página de React individual bajo `frontend/src/pages/` (generando automáticamente variables de estado para inputs y tablas, manejadores de eventos dinámicos para llamadas a acciones a través de botones, enlaces de navegación y tablas dinámicas estilizadas con soporte para acciones de eliminación/CRUD).
+* **Servidor C++ de Alto Rendimiento para Alojamiento SPA:** El servidor web compilado en C++ aloja la SPA de forma nativa. Sirve los archivos estáticos empaquetados desde `frontend/dist/` asociando las cabeceras de tipo MIME correspondientes. Para cualquier petición de rutas que no pertenezcan al API o websocket (e.g. `/inventario`), el servidor redirige el flujo de control a `frontend/dist/index.html` permitiendo que `react-router-dom` maneje la navegación del lado del cliente, mientras continúa enrutando `/api/*` y WebSockets a los controladores C++.
+* **Optimización y Caché de Dependencias (node_modules):** El transpilador evita instalaciones repetitivas y lentas verificando si la carpeta `frontend/node_modules/` ya existe, logrando compilaciones incrementales con Vite en menos de dos segundos.
 
 ---
 
