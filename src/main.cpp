@@ -297,6 +297,12 @@ int main(int argc, char* argv[]) {
         Parser parser(tokens);
         auto program = parser.parse();
 
+        if (command == "validate") {
+            SecurityAnalyzer analyzer(program, tokens);
+            analyzer.analyzeAST();
+            return 0;
+        }
+
         if (command == "ast") {
             program->print();
             return 0;

@@ -1,14 +1,21 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -29,6 +36,7 @@ func printUsage() {
 	fmt.Println("  hf db diff [file_or_dir]            - Generate an incremental SQL migration file (default: .)")
 	fmt.Println("  hf db migrate [file_or_dir]         - Run all pending SQL migrations (default: .)")
 	fmt.Println("  hf db rollback [file_or_dir]        - Rollback the last applied SQL migration (default: .)")
+	fmt.Println("  hf lsp                              - Start Hexagen Language Server (LSP) for editor integration")
 	fmt.Println("  hf help                             - Show this help message")
 }
 
@@ -488,6 +496,9 @@ func main() {
 
 			runCmd.Run()
 		}
+
+	case "lsp":
+		handleLsp()
 
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
@@ -1507,4 +1518,379 @@ int main(int argc, char* argv[]) {
 		fmt.Printf("❌ Error executing migrations: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// ==========================================
+// Hexagen Language Server (LSP) Implementation
+// ==========================================
+
+type LspRequest struct {
+	JsonRpc string          `json:"jsonrpc"`
+	Id      interface{}     `json:"id,omitempty"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
+}
+
+type LspResponse struct {
+	JsonRpc string      `json:"jsonrpc"`
+	Id      interface{} `json:"id"`
+	Result  interface{} `json:"result,omitempty"`
+	Error   interface{} `json:"error,omitempty"`
+}
+
+type LspNotification struct {
+	JsonRpc string      `json:"jsonrpc"`
+	Method  string      `json:"method"`
+	Params  interface{} `json:"params"`
+}
+
+type InitializeResult struct {
+	Capabilities ServerCapabilities `json:"capabilities"`
+}
+
+type ServerCapabilities struct {
+	TextDocumentSync   int                 `json:"textDocumentSync"`
+	CompletionProvider *CompletionOptions  `json:"completionProvider,omitempty"`
+}
+
+type CompletionOptions struct {
+	TriggerCharacters []string `json:"triggerCharacters,omitempty"`
+}
+
+type TextDocumentParams struct {
+	TextDocument TextDocumentItem `json:"textDocument"`
+}
+
+type TextDocumentItem struct {
+	Uri        string `json:"uri"`
+	LanguageId string `json:"languageId"`
+	Version    int    `json:"version"`
+	Text       string `json:"text"`
+}
+
+type DidChangeParams struct {
+	TextDocument   VersionedTextDocumentIdentifier `json:"textDocument"`
+	ContentChanges []TextDocumentContentChangeEvent `json:"contentChanges"`
+}
+
+type VersionedTextDocumentIdentifier struct {
+	Uri     string `json:"uri"`
+	Version int    `json:"version"`
+}
+
+type TextDocumentContentChangeEvent struct {
+	Text string `json:"text"`
+}
+
+type PublishDiagnosticsParams struct {
+	Uri         string       `json:"uri"`
+	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
+type Diagnostic struct {
+	Range    Range  `json:"range"`
+	Severity int    `json:"severity"`
+	Source   string `json:"source"`
+	Message  string `json:"message"`
+}
+
+type Range struct {
+	Start Position `json:"start"`
+	End   Position `json:"end"`
+}
+
+type Position struct {
+	Line      int `json:"line"`
+	Character int `json:"character"`
+}
+
+type CompletionParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+}
+
+type TextDocumentIdentifier struct {
+	Uri string `json:"uri"`
+}
+
+type CompletionItem struct {
+	Label         string `json:"label"`
+	Kind          int    `json:"kind"`
+	Detail        string `json:"detail,omitempty"`
+	Documentation string `json:"documentation,omitempty"`
+}
+
+var lspWriteMutex sync.Mutex
+
+func sendLspMessage(msg interface{}) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	lspWriteMutex.Lock()
+	defer lspWriteMutex.Unlock()
+	fmt.Printf("Content-Length: %d\r\n\r\n%s", len(data), string(data))
+	os.Stdout.Sync()
+}
+
+func sendLspResponse(id interface{}, result interface{}, err interface{}) {
+	resp := LspResponse{
+		JsonRpc: "2.0",
+		Id:      id,
+		Result:  result,
+		Error:   err,
+	}
+	sendLspMessage(resp)
+}
+
+func sendLspNotification(method string, params interface{}) {
+	notif := LspNotification{
+		JsonRpc: "2.0",
+		Method:  method,
+		Params:  params,
+	}
+	sendLspMessage(notif)
+}
+
+func handleLsp() {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		var contentLength int
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err == io.EOF {
+					return
+				}
+				os.Exit(1)
+			}
+			line = strings.TrimSpace(line)
+			if line == "" {
+				break
+			}
+			if strings.HasPrefix(line, "Content-Length:") {
+				parts := strings.Split(line, ":")
+				if len(parts) == 2 {
+					fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &contentLength)
+				}
+			}
+		}
+
+		if contentLength == 0 {
+			continue
+		}
+
+		body := make([]byte, contentLength)
+		_, err := io.ReadFull(reader, body)
+		if err != nil {
+			os.Exit(1)
+		}
+
+		var req LspRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			continue
+		}
+
+		go handleLspRequest(req)
+	}
+}
+
+func handleLspRequest(req LspRequest) {
+	switch req.Method {
+	case "initialize":
+		result := InitializeResult{
+			Capabilities: ServerCapabilities{
+				TextDocumentSync: 1, // Full document sync
+				CompletionProvider: &CompletionOptions{
+					TriggerCharacters: []string{".", ":"},
+				},
+			},
+		}
+		sendLspResponse(req.Id, result, nil)
+
+	case "initialized":
+		// No-op
+
+	case "textDocument/didOpen":
+		var params TextDocumentParams
+		if err := json.Unmarshal(req.Params, &params); err == nil {
+			validateDocument(params.TextDocument.Uri, params.TextDocument.Text)
+		}
+
+	case "textDocument/didChange":
+		var params DidChangeParams
+		if err := json.Unmarshal(req.Params, &params); err == nil {
+			if len(params.ContentChanges) > 0 {
+				validateDocument(params.TextDocument.Uri, params.ContentChanges[0].Text)
+			}
+		}
+
+	case "textDocument/completion":
+		var params CompletionParams
+		if err := json.Unmarshal(req.Params, &params); err == nil {
+			var textContent string
+			u, err := url.Parse(params.TextDocument.Uri)
+			if err == nil {
+				filePath := u.Path
+				data, err := os.ReadFile(filePath)
+				if err == nil {
+					textContent = string(data)
+				}
+			}
+			completions := getCompletions(textContent, params.Position)
+			sendLspResponse(req.Id, completions, nil)
+		}
+	}
+}
+
+func validateDocument(uri string, text string) {
+	tmpFile, err := os.CreateTemp("", "hexagen-lsp-*.hx")
+	if err != nil {
+		return
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := tmpFile.WriteString(text); err != nil {
+		return
+	}
+	tmpFile.Sync()
+
+	corePath, err := findCoreBinary()
+	if err != nil {
+		return
+	}
+
+	cmd := exec.Command(corePath, "validate", tmpFile.Name())
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	_ = cmd.Run()
+
+	errStr := stderr.String()
+	var diagnostics []Diagnostic
+
+	if errStr != "" {
+		line := 0
+		reLine := regexp.MustCompile(`line\s+(\d+)`)
+		match := reLine.FindStringSubmatch(errStr)
+		if len(match) == 2 {
+			l, _ := strconv.Atoi(match[1])
+			if l > 0 {
+				line = l - 1
+			}
+		} else {
+			reSlice := regexp.MustCompile(`slice\s+([A-Za-z0-9_]+)`)
+			matchSlice := reSlice.FindStringSubmatch(errStr)
+			if len(matchSlice) == 2 {
+				sliceName := matchSlice[1]
+				lines := strings.Split(text, "\n")
+				for idx, ln := range lines {
+					if strings.Contains(ln, "slice "+sliceName) {
+						line = idx
+						for searchIdx := idx; searchIdx < len(lines); searchIdx++ {
+							searchLine := lines[searchIdx]
+							if strings.Contains(searchLine, "print") || strings.Contains(searchLine, "system") || strings.Contains(searchLine, "fetch") || strings.Contains(searchLine, "curl") {
+								line = searchIdx
+								break
+							}
+							if searchIdx > idx && strings.Contains(searchLine, "slice ") {
+								break
+							}
+						}
+						break
+					}
+				}
+			}
+		}
+
+		cleanMsg := strings.TrimSpace(errStr)
+		cleanMsg = strings.TrimPrefix(cleanMsg, "Compilation Error:")
+		cleanMsg = strings.TrimSpace(cleanMsg)
+
+		diagnostics = append(diagnostics, Diagnostic{
+			Range: Range{
+				Start: Position{Line: line, Character: 0},
+				End:   Position{Line: line, Character: 80},
+			},
+			Severity: 1,
+			Source:   "Hexagen Compiler",
+			Message:  cleanMsg,
+		})
+	}
+
+	sendLspNotification("textDocument/publishDiagnostics", PublishDiagnosticsParams{
+		Uri:         uri,
+		Diagnostics: diagnostics,
+	})
+}
+
+func getCompletions(text string, pos Position) []CompletionItem {
+	var items []CompletionItem
+
+	keywords := []string{
+		"config", "database", "frontend", "css", "slice", "field", "action",
+		"view", "title", "input", "button", "table", "api", "route",
+		"websocket", "use", "secure", "job", "enqueue",
+	}
+	for _, kw := range keywords {
+		items = append(items, CompletionItem{
+			Label:  kw,
+			Kind:   14,
+			Detail: "Hexagen Keyword",
+		})
+	}
+
+	types := []string{"string", "int", "float", "bool"}
+	for _, t := range types {
+		items = append(items, CompletionItem{
+			Label:  t,
+			Kind:   6,
+			Detail: "Hexagen Type",
+		})
+	}
+
+	if text == "" {
+		return items
+	}
+
+	reSlice := regexp.MustCompile(`slice\s+([A-Za-z0-9_]+)`)
+	matchesSlice := reSlice.FindAllStringSubmatch(text, -1)
+	
+	for _, match := range matchesSlice {
+		if len(match) == 2 {
+			items = append(items, CompletionItem{
+				Label:  match[1],
+				Kind:   7,
+				Detail: "User Declared Slice",
+			})
+		}
+	}
+
+	lines := strings.Split(text, "\n")
+	currentSlice := ""
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "slice ") {
+			parts := strings.Fields(trimmed)
+			if len(parts) >= 2 {
+				currentSlice = strings.TrimSuffix(parts[1], "{")
+				currentSlice = strings.TrimSpace(currentSlice)
+			}
+		} else if strings.HasPrefix(trimmed, "action ") && currentSlice != "" {
+			parts := strings.Fields(trimmed)
+			if len(parts) >= 2 {
+				actionName := parts[1]
+				if idx := strings.Index(actionName, "("); idx != -1 {
+					actionName = actionName[:idx]
+				}
+				items = append(items, CompletionItem{
+					Label:  currentSlice + "." + actionName,
+					Kind:   3,
+					Detail: "Slice Action Call",
+				})
+			}
+		}
+	}
+
+	return items
 }

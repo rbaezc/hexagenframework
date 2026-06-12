@@ -378,6 +378,14 @@ If you specify `frontend: react` and `css: tailwind` in the `config` block of yo
 * **High-Performance C++ Static SPA Host:** The compiled C++ web server hosts the static SPA directly. It serves the bundled assets from `frontend/dist/` with the appropriate MIME content-types. For any non-API client router requests (e.g. `/inventario`), the server falls back to `frontend/dist/index.html` to allow `react-router-dom` to take over client-side routing, while forwarding `/api/*` and WebSocket connections to the C++ controller.
 * **Cached Node Modules Optimization:** The transpiler avoids running redundant, slow package installs by checking if `frontend/node_modules/` exists. It runs subsequent incremental Vite builds in less than two seconds.
 
+### 9. Editor Integration: LSP & VS Code Extension
+Hexagen provides professional IDE support using the Language Server Protocol (LSP) and a companion VS Code extension (inside `vscode-extension/`):
+
+* **Language Server Command (`hf lsp`):** Runs a native Go-based JSON-RPC language server that communicates over stdin/stdout.
+* **Real-time Validation & Diagnostics:** Scans `.hx` files on didOpen and didChange, running quick lexical and AST-based compiler/security validation. If a syntax or security error is found, it automatically reports it back as an inline editor diagnostic at the correct line number.
+* **Autocompletion & IntelliSense:** Suggests all Hexagen keywords, primitive types, user-defined slices, and slice actions (e.g. `Tareas.Crear`) contextually as you write.
+* **Rich Syntax Highlighting:** Includes a custom TextMate grammar (`hexagen.tmLanguage.json`) to color keywords, scopes, strings, comments, and types cleanly.
+
 ---
 
 ## 🛠️ Manual Compilation (Framework Contributors Only)

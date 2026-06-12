@@ -1,0 +1,80 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Hexagen",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.hx",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.hx",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.hx",
+          "match": "\\b(config|slice|view|api|job)\\b"
+        },
+        {
+          "name": "keyword.other.hx",
+          "match": "\\b(database|frontend|css|field|action|title|input|button|table|route|websocket|use|secure|enqueue)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.hx",
+          "match": "\\b(string|int|float|bool)\\b"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.hx",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.hx",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.hx",
+          "match": "\\b\\d+\\.\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.hx",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    }
+  ],
+  "scopeName": "source.hx"
+}

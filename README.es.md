@@ -372,6 +372,14 @@ Si especificas `frontend: react` y `css: tailwind` en el bloque `config` de tu a
 * **Servidor C++ de Alto Rendimiento para Alojamiento SPA:** El servidor web compilado en C++ aloja la SPA de forma nativa. Sirve los archivos estáticos empaquetados desde `frontend/dist/` asociando las cabeceras de tipo MIME correspondientes. Para cualquier petición de rutas que no pertenezcan al API o websocket (e.g. `/inventario`), el servidor redirige el flujo de control a `frontend/dist/index.html` permitiendo que `react-router-dom` maneje la navegación del lado del cliente, mientras continúa enrutando `/api/*` y WebSockets a los controladores C++.
 * **Optimización y Caché de Dependencias (node_modules):** El transpilador evita instalaciones repetitivas y lentas verificando si la carpeta `frontend/node_modules/` ya existe, logrando compilaciones incrementales con Vite en menos de dos segundos.
 
+### 9. Integración con Editores: LSP y Extensión para VS Code
+Hexagen provee soporte profesional para entornos de desarrollo utilizando el Language Server Protocol (LSP) y una extensión dedicada para VS Code (en la carpeta `vscode-extension/`):
+
+* **Comando del Language Server (`hf lsp`):** Inicia un servidor de lenguaje nativo escrito en Go que procesa mensajes JSON-RPC a través de la entrada y salida estándar (stdin/stdout).
+* **Validación y Diagnósticos en Tiempo Real:** Analiza los archivos `.hx` al abrir y modificar el documento (`didOpen`/`didChange`), ejecutando comprobaciones léxicas y análisis de seguridad basados en AST. Si se detecta un error de sintaxis o seguridad, lo reporta de forma visual en la línea exacta del código en tu editor.
+* **Autocompletado e IntelliSense:** Sugiere dinámicamente palabras clave de Hexagen, tipos de datos primitivos, slices definidos por el usuario, y acciones de slices (e.g. `Tareas.Crear`) contextualmente según el lugar donde escribes.
+* **Resaltado de Sintaxis Rico:** Incluye una gramática TextMate personalizada (`hexagen.tmLanguage.json`) para colorear palabras clave, bloques, cadenas de texto, comentarios y tipos primitivos de manera limpia.
+
 ---
 
 ## 🛠️ Compilación Manual (Solo para Desarrolladores del Framework)

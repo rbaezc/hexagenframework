@@ -1,0 +1,52 @@
+{
+  "name": "hexagen-vscode",
+  "displayName": "Hexagen Language Support",
+  "description": "Rich Language Server Protocol (LSP) and syntax highlighting for Hexagen Framework (.hx)",
+  "version": "0.1.0",
+  "publisher": "vortex",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:hexagen"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "hexagen",
+        "aliases": [
+          "Hexagen",
+          "hexagen"
+        ],
+        "extensions": [
+          ".hx"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "hexagen",
+        "scopeName": "source.hx",
+        "path": "./syntaxes/hexagen.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^8.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^16.11.7",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^4.9.5"
+  }
+}
