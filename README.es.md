@@ -170,7 +170,25 @@ Esto genera el ejecutable `mi_servidor`. Para correrlo en cualquier máquina de 
 ./mi_servidor
 ```
 
-### Paso 5: Probar la Seguridad del API (Pillar 3)
+---
+
+### Paso 5: Contenedorizar para Producción (Docker & Docker Compose)
+Hexagen puede generar automáticamente configuraciones de contenedores optimizadas y adaptadas al motor de base de datos de tu proyecto:
+```bash
+hf dockerize .
+```
+Esto genera:
+1. Un `Dockerfile` multietapa optimizado para caché que compila tu aplicación de C++ dentro de un entorno seguro y genera una imagen final basada en `debian-slim` mínima.
+2. Un archivo `docker-compose.yml` listo para producción, preconfigurado con los contenedores de bases de datos correctos (Postgres, MySQL) y mapeos de volúmenes persistentes (para JSONL, SQLite y almacenamiento de archivos subidos).
+
+Para arrancar tu entorno de producción, simplemente ejecuta:
+```bash
+docker-compose up --build -d
+```
+
+---
+
+### Paso 6: Probar la Seguridad del API (Pillar 3)
 Puedes probar las restricciones de seguridad de las rutas seguras (anotadas con `secure`) enviando peticiones HTTP:
 
 *   **Petición No Autorizada (Bloqueada):**

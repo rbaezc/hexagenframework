@@ -12,8 +12,10 @@ import (
 	"time"
 )
 
+const Version = "v0.3.0"
+
 func printUsage() {
-	fmt.Println("Hexagen Framework CLI (hf)")
+	fmt.Printf("Hexagen Framework CLI (hf) %s\n", Version)
 	fmt.Println("Usage:")
 	fmt.Println("  hf new <project_name>               - Scaffold a new project workspace")
 	fmt.Println("  hf dev [file_or_dir]                - Start live dev server (Hot Reload) (default: .)")
@@ -22,6 +24,7 @@ func printUsage() {
 	fmt.Println("  hf compile [file_or_dir] -o <out>   - Transpile and compile to executable (default: .)")
 	fmt.Println("  hf run [file_or_dir]                - Transpile, compile, and run immediately (default: .)")
 	fmt.Println("  hf ast [file_or_dir]                - Print the AST of the input source (default: .)")
+	fmt.Println("  hf dockerize [file_or_dir]          - Generate production-ready Dockerfile & docker-compose.yml (default: .)")
 	fmt.Println("  hf help                             - Show this help message")
 }
 
@@ -325,6 +328,15 @@ func main() {
 		os.Exit(0)
 	}
 
+	if command == "dockerize" {
+		inputPath := "."
+		if len(os.Args) >= 3 {
+			inputPath = os.Args[2]
+		}
+		handleDockerize(inputPath)
+		os.Exit(0)
+	}
+
 	// Determine input path and output exe dynamically
 	inputPath := "."
 	outputExe := "a.out"
@@ -452,4 +464,207 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+func handleDockerize(inputPath string) {
+	fmt.Printf("🐳 [Hexagen Docker] Generating container configurations for: %s\n", inputPath)
+
+	// 1. Transpile code to detect the database engine configuration
+	cppCode, err := runCore("transpile", inputPath)
+	if err != nil {
+		fmt.Printf("❌ Error: Could not transpile project to detect config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 2. Detect DB Type
+	dbType := "jsonl" // default
+	if strings.Contains(cppCode, "Database Engine: sqlite") {
+		dbType = "sqlite"
+	} else if strings.Contains(cppCode, "Database Engine: postgres") || strings.Contains(cppCode, "Database Engine: postgresql") {
+		dbType = "postgres"
+	} else if strings.Contains(cppCode, "Database Engine: mysql") {
+		dbType = "mysql"
+	}
+
+	fmt.Printf("ℹ️  [Hexagen Docker] Detected database engine: %s\n", dbType)
+
+	// 3. Generate Dockerfile
+	buildDeps := ""
+	runDeps := ""
+	switch dbType {
+	case "sqlite":
+		buildDeps = "libsqlite3-dev"
+		runDeps = "libsqlite3-0"
+	case "postgres":
+		buildDeps = "libpq-dev"
+		runDeps = "libpq5"
+	case "mysql":
+		buildDeps = "default-libmysqlclient-dev"
+		runDeps = "libmariadb3"
+	}
+
+	dockerfileContent := fmt.Sprintf(`# Dockerfile autogenerado por Hexagen Framework
+# --- Etapa de Compilación ---
+FROM gcc:13 AS builder
+
+# Instalar dependencias necesarias para compilar el núcleo
+RUN apt-get update && apt-get install -y \
+    curl \
+    %s \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Descargar las herramientas de compilación de Hexagen (versión %s)
+RUN curl -L https://github.com/rbaezc/hexagenframework/releases/download/%s/hf_linux_x86_64 -o hf && chmod +x hf
+RUN curl -L https://github.com/rbaezc/hexagenframework/releases/download/%s/hf_core_linux_x86_64 -o hf_core && chmod +x hf_core
+
+# Copiar el código fuente del proyecto
+COPY . .
+
+# Asegurar que existan directorios y archivos para evitar fallos de copia
+RUN mkdir -p public
+RUN touch .env
+
+# Transpilar y compilar la aplicación a producción
+RUN ./hf compile . -o server_release
+
+# --- Etapa de Ejecución ---
+FROM debian:stable-slim
+
+# Instalar dependencias de ejecución de la base de datos y certificados CA
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    %s \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /data
+
+# Copiar el servidor compilado, directorio público y archivo .env si existiesen
+COPY --from=builder /app/server_release /usr/local/bin/server_release
+COPY --from=builder /app/public /data/public
+COPY --from=builder /app/.env /data/.env
+
+EXPOSE 8080
+
+CMD ["/usr/local/bin/server_release"]
+`, buildDeps, Version, Version, Version, runDeps)
+
+	// Write Dockerfile
+	dockerfilePath := filepath.Join(inputPath, "Dockerfile")
+	err = os.WriteFile(dockerfilePath, []byte(dockerfileContent), 0644)
+	if err != nil {
+		fmt.Printf("❌ Error al escribir Dockerfile: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("✅ [Hexagen Docker] 'Dockerfile' generado con éxito.")
+
+	// 4. Generate docker-compose.yml
+	var composeContent string
+	switch dbType {
+	case "postgres":
+		composeContent = `version: '3.8'
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=hexagen_user
+      - DB_PASS=hexagen_password
+      - DB_NAME=hexagen_db
+      - JWT_SECRET=cambiar_en_produccion
+    depends_on:
+      - db
+    volumes:
+      - hexagen-data:/data
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=hexagen_user
+      - POSTGRES_PASSWORD=hexagen_password
+      - POSTGRES_DB=hexagen_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  postgres-data:
+  hexagen-data:
+`
+	case "mysql":
+		composeContent = `version: '3.8'
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_USER=hexagen_user
+      - DB_PASS=hexagen_password
+      - DB_NAME=hexagen_db
+      - JWT_SECRET=cambiar_en_produccion
+    depends_on:
+      - db
+    volumes:
+      - hexagen-data:/data
+
+  db:
+    image: mysql:8.0
+    environment:
+      - MYSQL_ROOT_PASSWORD=hexagen_root_password
+      - MYSQL_DATABASE=hexagen_db
+      - MYSQL_USER=hexagen_user
+      - MYSQL_PASSWORD=hexagen_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+volumes:
+  mysql-data:
+  hexagen-data:
+`
+	case "sqlite", "jsonl":
+		composeContent = `version: '3.8'
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - JWT_SECRET=cambiar_en_produccion
+    volumes:
+      - hexagen-data:/data
+
+volumes:
+  hexagen-data:
+`
+	}
+
+	// Write docker-compose.yml
+	composePath := filepath.Join(inputPath, "docker-compose.yml")
+	err = os.WriteFile(composePath, []byte(composeContent), 0644)
+	if err != nil {
+		fmt.Printf("❌ Error al escribir docker-compose.yml: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("✅ [Hexagen Docker] 'docker-compose.yml' generado con éxito.")
+	fmt.Println("\n🚀 ¡Configuración lista! Puedes iniciar tu entorno de producción ejecutando:")
+	fmt.Println("   docker-compose up --build -d")
 }

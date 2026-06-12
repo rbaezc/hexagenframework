@@ -173,7 +173,23 @@ This generates the `my_server` executable. To run it on any production machine, 
 
 ---
 
-### Step 5: Test API Security (Pillar 3)
+### Step 5: Containerize for Production (Docker & Docker Compose)
+Hexagen can automatically generate optimized container configurations tailored to your project's database engine:
+```bash
+hf dockerize .
+```
+This generates:
+1. A multi-stage, caching-friendly `Dockerfile` that compiles your C++ application inside a secure environment and targets a minimal `debian-slim` base image.
+2. A production-ready `docker-compose.yml` pre-configured with the correct database containers (PostgreSQL, MySQL) and volume mounts for persistence (JSONL, SQLite, and upload directories).
+
+To spin up your production stack, simply run:
+```bash
+docker-compose up --build -d
+```
+
+---
+
+### Step 6: Test API Security (Pillar 3)
 You can test the security restrictions of secure routes (annotated with `secure`) by sending HTTP requests:
 
 *   **Unauthorized Request (Blocked):**
