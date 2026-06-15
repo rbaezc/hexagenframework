@@ -18,17 +18,17 @@ jobs:
           - os: ubuntu-latest
             artifact_name_core: hf_core_linux_x86_64
             artifact_name_cli: hf_linux_x86_64
-            compile_cmd_core: g++ -std=c++17 -O3 src/codegen.cpp src/lexer.cpp src/parser.cpp src/security_analyzer.cpp src/main.cpp -o hf_core_linux_x86_64
+            compile_cmd_core: g++ -std=c++20 -O3 src/codegen.cpp src/lexer.cpp src/parser.cpp src/security_analyzer.cpp src/main.cpp -o hf_core_linux_x86_64
             compile_cmd_cli: go build -o hf_linux_x86_64 cli/main.go
           - os: macos-latest
             artifact_name_core: hf_core_darwin_arm64
             artifact_name_cli: hf_darwin_arm64
-            compile_cmd_core: clang++ -std=c++17 -O3 src/codegen.cpp src/lexer.cpp src/parser.cpp src/security_analyzer.cpp src/main.cpp -o hf_core_darwin_arm64 -target arm64-apple-macos11
+            compile_cmd_core: clang++ -std=c++20 -O3 src/codegen.cpp src/lexer.cpp src/parser.cpp src/security_analyzer.cpp src/main.cpp -o hf_core_darwin_arm64 -target arm64-apple-macos11
             compile_cmd_cli: go build -o hf_darwin_arm64 cli/main.go
           - os: windows-latest
             artifact_name_core: hf_core_windows_x86_64.exe
             artifact_name_cli: hf_windows_x86_64.exe
-            compile_cmd_core: g++ -std=c++17 -O3 src/codegen.cpp src/lexer.cpp src/parser.cpp src/security_analyzer.cpp src/main.cpp -o hf_core_windows_x86_64.exe
+            compile_cmd_core: g++ -std=c++20 -O3 src/codegen.cpp src/lexer.cpp src/parser.cpp src/security_analyzer.cpp src/main.cpp -o hf_core_windows_x86_64.exe
             compile_cmd_cli: go build -o hf_windows_x86_64.exe cli/main.go
 
     steps:
