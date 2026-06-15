@@ -124,7 +124,10 @@ std::shared_ptr<ASTStatement> Parser::parseStatement() {
             }
         }
         consume(TokenType::RPAREN, "Expected ')' after enqueue arguments");
-        return enqueue;
+    } else if (match(TokenType::CPP)) {
+        const auto& codeTok = peek();
+        consume(TokenType::STRING_LITERAL, "Expected string literal containing C++ code after 'cpp'");
+        return std::make_shared<ASTCppStatement>(codeTok.value);
     } else if (match(TokenType::PRINT)) {
         consume(TokenType::LPAREN, "Expected '(' after 'print'");
         auto expr = parseExpression();
@@ -192,6 +195,7 @@ std::shared_ptr<ASTStatement> Parser::parseStatement() {
         const auto& tok = peek();
         throw std::runtime_error("Unexpected token in statement: '" + tok.value + "' at line " + std::to_string(tok.line));
     }
+    return nullptr;
 }
 
 std::shared_ptr<ASTView> Parser::parseView() {

@@ -69,6 +69,8 @@ std::string CodeGenerator::generateStatement(std::shared_ptr<ASTStatement> stmt)
         ss << "                jobInst->Run();\n";
         ss << "            });\n";
         ss << "        }\n";
+    } else if (auto cppStmt = std::dynamic_pointer_cast<ASTCppStatement>(stmt)) {
+        ss << "        " << cppStmt->code << "\n";
     }
     return ss.str();
 }

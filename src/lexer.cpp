@@ -181,6 +181,7 @@ std::vector<Token> Lexer::tokenize() {
             else if (ident == "job") type = TokenType::JOB;
             else if (ident == "enqueue") type = TokenType::ENQUEUE;
             else if (ident == "use") type = TokenType::USE;
+            else if (ident == "cpp") type = TokenType::CPP;
 
             tokens.push_back({type, ident, startLine, startCol});
             continue;

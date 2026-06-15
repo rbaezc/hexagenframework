@@ -88,6 +88,16 @@ public:
     }
 };
 
+class ASTCppStatement : public ASTStatement {
+public:
+    std::string code;
+
+    ASTCppStatement(std::string code) : code(code) {}
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "CppStatement:\n" << std::string(indent + 2, ' ') << code << "\n";
+    }
+};
+
 class ASTAssignmentStatement : public ASTStatement {
 public:
     std::string variableName;
