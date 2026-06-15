@@ -22,6 +22,7 @@ enum class TokenType {
     INPUT,
     BUTTON,
     TABLE, // "table"
+    HTML,  // "html"
     
     // API Routing Keywords
     API,
@@ -91,6 +92,7 @@ inline std::string tokenTypeToString(TokenType type) {
         case TokenType::INPUT: return "input";
         case TokenType::BUTTON: return "button";
         case TokenType::TABLE: return "table";
+        case TokenType::HTML: return "html";
         case TokenType::API: return "api";
         case TokenType::ROUTE: return "route";
         case TokenType::SECURE: return "secure";

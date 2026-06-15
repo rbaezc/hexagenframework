@@ -848,6 +848,23 @@ std::string CodeGenerator::generateJob(std::shared_ptr<ASTJob> job) {
 }
 
 std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
+    bool hasHtml = false;
+    for (const auto& elem : view->elements) {
+        if (elem->type == "html") {
+            hasHtml = true;
+            break;
+        }
+    }
+    std::string customStyle = "";
+    if (std::filesystem::exists("style.css")) {
+        std::ifstream f("style.css");
+        if (f.is_open()) {
+            std::stringstream buffer;
+            buffer << f.rdbuf();
+            customStyle = buffer.str();
+            f.close();
+        }
+    }
     std::stringstream ss;
     ss << "<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n"
        << "    <meta charset=\"UTF-8\">\n"
@@ -860,79 +877,97 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
        << "    <link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n"
        << "    <link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n"
        << "    <link href=\"https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap\" rel=\"stylesheet\">\n"
-       << "    <style>\n"
-       << "        :root {\n"
-       << "            --bg-color: #0b0f19;\n"
-       << "            --card-bg: rgba(20, 30, 55, 0.45);\n"
-       << "            --border-color: rgba(255, 255, 255, 0.08);\n"
-       << "            --primary-glow: #00f2fe;\n"
-       << "            --secondary-glow: #4facfe;\n"
-       << "            --text-color: #f3f4f6;\n"
-       << "            --text-muted: #9ca3af;\n"
-       << "        }\n"
-       << "        * { box-sizing: border-box; margin: 0; padding: 0; }\n"
-       << "        body {\n"
-       << "            font-family: 'Outfit', sans-serif; background-color: var(--bg-color); color: var(--text-color);\n"
-       << "            min-height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; overflow-x: hidden; position: relative;\n"
-       << "        }\n"
-       << "        body::before {\n"
-       << "            content: ''; position: absolute; width: 300px; height: 300px;\n"
-       << "            background: radial-gradient(circle, var(--primary-glow) 0%, transparent 70%);\n"
-       << "            top: 10%; left: 15%; opacity: 0.15; filter: blur(80px); z-index: 0;\n"
-       << "        }\n"
-       << "        body::after {\n"
-       << "            content: ''; position: absolute; width: 350px; height: 350px;\n"
-       << "            background: radial-gradient(circle, var(--secondary-glow) 0%, transparent 70%);\n"
-       << "            bottom: 15%; right: 15%; opacity: 0.15; filter: blur(80px); z-index: 0;\n"
-       << "        }\n"
-       << "        .container { width: 100%; max-width: 550px; padding: 2rem; z-index: 1; }\n"
-       << "        .card {\n"
-       << "            background: var(--card-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);\n"
-       << "            border: 1px solid var(--border-color); border-radius: 24px; padding: 2.5rem; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);\n"
-       << "        }\n"
-       << "        .heading-container { margin-bottom: 2rem; text-align: center; }\n"
-       << "        .main-heading { font-size: 2rem; font-weight: 800; background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; }\n"
-       << "        .sub-heading { font-size: 0.95rem; color: var(--text-muted); }\n"
-       << "        .form-group { margin-bottom: 1.5rem; }\n"
-       << "        .form-label { display: block; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem; }\n"
-       << "        .form-input { width: 100%; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); border-radius: 12px; padding: 0.85rem 1rem; color: white; font-family: inherit; font-size: 1rem; }\n"
-       << "        .form-input:focus { outline: none; border-color: var(--primary-glow); background: rgba(255, 255, 255, 0.06); }\n"
-       << "        .btn {\n"
-       << "            width: 100%; background: linear-gradient(135deg, var(--secondary-glow) 0%, var(--primary-glow) 100%);\n"
-       << "            border: none; color: #0b0f19; padding: 1rem; font-size: 1rem; font-weight: 700; border-radius: 12px; cursor: pointer; transition: all 0.3s ease; margin-bottom: 1rem;\n"
-       << "        }\n"
-       << "        .btn:hover { transform: translateY(-2px); filter: brightness(1.1); }\n"
-       << "        .result-panel { margin-top: 2rem; background: rgba(0, 0, 0, 0.25); border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.05); padding: 1.25rem; display: none; }\n"
-       << "        .result-title { font-size: 0.85rem; font-weight: 600; color: var(--primary-glow); margin-bottom: 0.5rem; text-transform: uppercase; }\n"
-       << "        .result-code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; white-space: pre-wrap; color: #e5e7eb; }\n"
-       << "        .table-container { margin-top: 2rem; background: rgba(0, 0, 0, 0.2); border-radius: 12px; overflow: hidden; border: 1px solid var(--border-color); }\n"
-       << "        .data-table { width: 100%; text-align: left; border-collapse: collapse; }\n"
-       << "        .data-table th, .data-table td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border-color); }\n"
-       << "        .data-table th { background: rgba(255, 255, 255, 0.03); font-size: 0.85rem; text-transform: uppercase; color: var(--text-muted); }\n"
-       << "        .data-table td { font-size: 0.95rem; }\n"
-       << "    </style>\n"
-       << "</head>\n"
-       << "<body>\n"
-       << "    <main class=\"container\">\n"
-       << "        <section class=\"card\">\n"
-       << "            <div id=\"hexa-root\">\n";
-
-    ss << "                <div class=\"heading-container\">\n";
-    ss << "                    <h1 class=\"main-heading\">" << view->name << "</h1>\n";
-    
-    std::string sub = "Hexagen Compiled UI";
-    for (const auto& elem : view->elements) {
-        if (elem->type == "title") sub = elem->label;
+       << "    <style>\n";
+    if (program->css != "none") {
+        ss << "        :root {\n"
+           << "            --bg-color: #0b0f19;\n"
+           << "            --card-bg: rgba(20, 30, 55, 0.45);\n"
+           << "            --border-color: rgba(255, 255, 255, 0.08);\n"
+           << "            --primary-glow: #00f2fe;\n"
+           << "            --secondary-glow: #4facfe;\n"
+           << "            --text-color: #f3f4f6;\n"
+           << "            --text-muted: #9ca3af;\n"
+           << "        }\n"
+           << "        * { box-sizing: border-box; margin: 0; padding: 0; }\n"
+           << "        body {\n"
+           << "            font-family: 'Outfit', sans-serif; background-color: var(--bg-color); color: var(--text-color);\n"
+           << "            min-height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; overflow-x: hidden; position: relative;\n"
+           << "        }\n"
+           << "        body::before {\n"
+           << "            content: ''; position: absolute; width: 300px; height: 300px;\n"
+           << "            background: radial-gradient(circle, var(--primary-glow) 0%, transparent 70%);\n"
+           << "            top: 10%; left: 15%; opacity: 0.15; filter: blur(80px); z-index: 0;\n"
+           << "        }\n"
+           << "        body::after {\n"
+           << "            content: ''; position: absolute; width: 350px; height: 350px;\n"
+           << "            background: radial-gradient(circle, var(--secondary-glow) 0%, transparent 70%);\n"
+           << "            bottom: 15%; right: 15%; opacity: 0.15; filter: blur(80px); z-index: 0;\n"
+           << "        }\n"
+           << "        .container { width: 100%; max-width: 550px; padding: 2rem; z-index: 1; }\n"
+           << "        .card {\n"
+           << "            background: var(--card-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);\n"
+           << "            border: 1px solid var(--border-color); border-radius: 24px; padding: 2.5rem; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);\n"
+           << "        }\n"
+           << "        .heading-container { margin-bottom: 2rem; text-align: center; }\n"
+           << "        .main-heading { font-size: 2rem; font-weight: 800; background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; }\n"
+           << "        .sub-heading { font-size: 0.95rem; color: var(--text-muted); }\n"
+           << "        .form-group { margin-bottom: 1.5rem; }\n"
+           << "        .form-label { display: block; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem; }\n"
+           << "        .form-input { width: 100%; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); border-radius: 12px; padding: 0.85rem 1rem; color: white; font-family: inherit; font-size: 1rem; }\n"
+           << "        .form-input:focus { outline: none; border-color: var(--primary-glow); background: rgba(255, 255, 255, 0.06); }\n"
+           << "        .btn {\n"
+           << "            width: 100%; background: linear-gradient(135deg, var(--secondary-glow) 0%, var(--primary-glow) 100%);\n"
+           << "            border: none; color: #0b0f19; padding: 1rem; font-size: 1rem; font-weight: 700; border-radius: 12px; cursor: pointer; transition: all 0.3s ease; margin-bottom: 1rem;\n"
+           << "        }\n"
+           << "        .btn:hover { transform: translateY(-2px); filter: brightness(1.1); }\n"
+           << "        .result-panel { margin-top: 2rem; background: rgba(0, 0, 0, 0.25); border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.05); padding: 1.25rem; display: none; }\n"
+           << "        .result-title { font-size: 0.85rem; font-weight: 600; color: var(--primary-glow); margin-bottom: 0.5rem; text-transform: uppercase; }\n"
+           << "        .result-code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; white-space: pre-wrap; color: #e5e7eb; }\n"
+           << "        .table-container { margin-top: 2rem; background: rgba(0, 0, 0, 0.2); border-radius: 12px; overflow: hidden; border: 1px solid var(--border-color); }\n"
+           << "        .data-table { width: 100%; text-align: left; border-collapse: collapse; }\n"
+           << "        .data-table th, .data-table td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border-color); }\n"
+           << "        .data-table th { background: rgba(255, 255, 255, 0.03); font-size: 0.85rem; text-transform: uppercase; color: var(--text-muted); }\n"
+           << "        .data-table td { font-size: 0.95rem; }\n";
     }
-    ss << "                    <p class=\"sub-heading\">" << sub << "</p>\n";
-    ss << "                </div>\n";
+    if (!customStyle.empty()) {
+        ss << "        /* Custom Styles Overrides */\n" << customStyle << "\n";
+    }
+    ss << "    </style>\n"
+       << "</head>\n"
+       << "<body>\n";
+
+    if (program->css != "none") {
+        ss << "    <main class=\"container\">\n"
+           << "        <section class=\"card\">\n"
+           << "            <div id=\"hexa-root\">\n";
+        
+        ss << "                <div class=\"heading-container\">\n";
+        ss << "                    <h1 class=\"main-heading\">" << view->name << "</h1>\n";
+        
+        std::string sub = "Hexagen Compiled UI";
+        for (const auto& elem : view->elements) {
+            if (elem->type == "title") sub = elem->label;
+        }
+        ss << "                    <p class=\"sub-heading\">" << sub << "</p>\n";
+        ss << "                </div>\n";
+    } else {
+        ss << "            <div id=\"hexa-root\">\n";
+    }
 
     for (const auto& elem : view->elements) {
         if (elem->type == "input") {
-            ss << "                <div class=\"form-group\">\n";
-            ss << "                    <label class=\"form-label\">" << elem->label << "</label>\n";
-            ss << "                    <input type=\"text\" class=\"form-input\" id=\"input-" << elem->name << "\" name=\"" << elem->name << "\">\n";
-            ss << "                </div>\n";
+            if (program->css == "none") {
+                std::string cls = elem->className.empty() ? "" : " class=\"" + elem->className + "\"";
+                ss << "                <div" << cls << ">\n";
+                ss << "                    <label" << cls << ">" << elem->label << "</label>\n";
+                ss << "                    <input type=\"text\"" << cls << " id=\"input-" << elem->name << "\" name=\"" << elem->name << "\">\n";
+                ss << "                </div>\n";
+            } else {
+                ss << "                <div class=\"form-group\">\n";
+                ss << "                    <label class=\"form-label\">" << elem->label << "</label>\n";
+                ss << "                    <input type=\"text\" class=\"form-input\" id=\"input-" << elem->name << "\" name=\"" << elem->name << "\">\n";
+                ss << "                </div>\n";
+            }
         } else if (elem->type == "button") {
             // Check if redirect / navigation button
             bool isNavigationView = false;
@@ -946,8 +981,9 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
                 }
             }
 
+            std::string clickAttr = "";
             if (isNavigationView) {
-                ss << "                <button class=\"btn\" onclick=\"window.location.href = '/" << viewTarget << "'\">" << elem->label << "</button>\n";
+                clickAttr = "onclick=\"window.location.href = '/" + viewTarget + "'\"";
             } else {
                 std::string apiEndpoint = "/execute";
                 if (!program->apis.empty()) {
@@ -958,16 +994,16 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
                         }
                     }
                 }
-                ss << "                <button class=\"btn\" onclick=\"triggerAction('" << apiEndpoint << "')\">" << elem->label << "</button>\n";
+                clickAttr = "onclick=\"triggerAction('" + apiEndpoint + "')\"";
+            }
+
+            if (program->css == "none") {
+                std::string cls = elem->className.empty() ? "" : " class=\"" + elem->className + "\"";
+                ss << "                <button" << cls << " " << clickAttr << ">" << elem->label << "</button>\n";
+            } else {
+                ss << "                <button class=\"btn\" " << clickAttr << ">" << elem->label << "</button>\n";
             }
         } else if (elem->type == "table") {
-            ss << "                <div class=\"table-container\">\n";
-            ss << "                    <table class=\"data-table\">\n";
-            ss << "                        <thead>\n";
-            ss << "                            <tr>\n";
-            for (const auto& col : elem->columns) {
-                ss << "                                <th>" << col << "</th>\n";
-            }
             // Add action column if there is delete route
             bool hasDeleteRoute = false;
             std::string deleteEndpoint = "";
@@ -984,27 +1020,70 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
                     }
                 }
             }
-            if (hasDeleteRoute) {
-                ss << "                                <th>Acciones</th>\n";
+
+            if (program->css == "none") {
+                std::string cls = elem->className.empty() ? "" : " class=\"" + elem->className + "\"";
+                ss << "                <div" << cls << ">\n";
+                ss << "                    <table>\n";
+                ss << "                        <thead>\n";
+                ss << "                            <tr>\n";
+                for (const auto& col : elem->columns) {
+                    ss << "                                <th>" << col << "</th>\n";
+                }
+                if (hasDeleteRoute) {
+                    ss << "                                <th>Acciones</th>\n";
+                }
+                ss << "                            </tr>\n";
+                ss << "                        </thead>\n";
+                ss << "                        <tbody id=\"table-body-" << elem->label << "\">\n";
+                ss << "                            <!-- dynamic rows -->\n";
+                ss << "                        </tbody>\n";
+                ss << "                    </table>\n";
+                ss << "                </div>\n";
+            } else {
+                ss << "                <div class=\"table-container\">\n";
+                ss << "                    <table class=\"data-table\">\n";
+                ss << "                        <thead>\n";
+                ss << "                            <tr>\n";
+                for (const auto& col : elem->columns) {
+                    ss << "                                <th>" << col << "</th>\n";
+                }
+                if (hasDeleteRoute) {
+                    ss << "                                <th>Acciones</th>\n";
+                }
+                ss << "                            </tr>\n";
+                ss << "                        </thead>\n";
+                ss << "                        <tbody id=\"table-body-" << elem->label << "\">\n";
+                ss << "                            <!-- dynamic rows -->\n";
+                ss << "                        </tbody>\n";
+                ss << "                    </table>\n";
+                ss << "                </div>\n";
             }
-            ss << "                            </tr>\n";
-            ss << "                        </thead>\n";
-            ss << "                        <tbody id=\"table-body-" << elem->label << "\">\n";
-            ss << "                            <!-- dynamic rows -->\n";
-            ss << "                        </tbody>\n";
-            ss << "                    </table>\n";
-            ss << "                </div>\n";
+        } else if (elem->type == "html") {
+            if (program->css == "none") {
+                std::string cls = elem->className.empty() ? "" : " class=\"" + elem->className + "\"";
+                ss << "                <div" << cls << ">" << elem->label << "</div>\n";
+            } else {
+                ss << elem->label << "\n";
+            }
         }
     }
 
-    ss << "            </div>\n"
-       << "            <div class=\"result-panel\" id=\"result-panel\">\n"
-       << "                <div class=\"result-title\" id=\"result-title\">Respuesta de la API C++</div>\n"
-       << "                <pre class=\"result-code\"><code id=\"result-code\"></code></pre>\n"
-       << "            </div>\n"
-       << "        </section>\n"
-       << "    </main>\n"
-       << "    <script>\n";
+    ss << "            </div>\n";
+    if (program->css != "none") {
+        ss << "            <div class=\"result-panel\" id=\"result-panel\">\n"
+           << "                <div class=\"result-title\" id=\"result-title\">Respuesta de la API C++</div>\n"
+           << "                <pre class=\"result-code\"><code id=\"result-code\"></code></pre>\n"
+           << "            </div>\n"
+           << "        </section>\n"
+           << "    </main>\n";
+    } else {
+        ss << "            <div id=\"result-panel\" style=\"display:none;\">\n"
+           << "                <div id=\"result-title\">Respuesta de la API C++</div>\n"
+           << "                <pre><code id=\"result-code\"></code></pre>\n"
+           << "            </div>\n";
+    }
+    ss << "    <script>\n";
 
     // Refresh dynamic tables script
     ss << "        async function refreshTables() {\n";
@@ -1322,7 +1401,26 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             file << R"CSS(@tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+    --bg-color: #0b0f19;
+    --card-bg: rgba(20, 30, 55, 0.45);
+    --border-color: rgba(255, 255, 255, 0.08);
+    --primary-glow: #00f2fe;
+    --secondary-glow: #4facfe;
+    --text-color: #f3f4f6;
+    --text-muted: #9ca3af;
+}
 )CSS";
+            // Check if local style.css exists in the directory where hf was run, and merge it
+            if (std::filesystem::exists("style.css")) {
+                std::ifstream custom("style.css");
+                if (custom.is_open()) {
+                    file << "\n/* Custom Styles Overrides */\n";
+                    file << custom.rdbuf();
+                    custom.close();
+                }
+            }
             file.close();
         }
     }
@@ -1493,59 +1591,101 @@ void CodeGenerator::generateReactPage(std::shared_ptr<ASTView> view) {
                 file << "    };\n\n";
             }
         }
-    }
-
-    // Render component
+    }    // Render component
     file << "    return (\n";
-    file << "        <div className=\"min-h-screen bg-[#0b0f19] text-[#f3f4f6] flex flex-col justify-center items-center relative overflow-hidden font-sans\">\n";
-    file << "            <div className=\"absolute w-[300px] h-[300px] bg-gradient-to-r from-[#00f2fe] to-transparent rounded-full top-[10%] left-[15%] opacity-15 blur-[80px]\" />\n";
-    file << "            <div className=\"absolute w-[350px] h-[350px] bg-gradient-to-r from-[#4facfe] to-transparent rounded-full bottom-[15%] right-[15%] opacity-15 blur-[80px]\" />\n";
-    file << "            \n";
-    file << "            <main className=\"w-full max-w-[550px] p-8 z-10\">\n";
-    file << "                <section className=\"bg-white/5 backdrop-blur-[20px] border border-white/10 rounded-[24px] p-10 shadow-[0_20px_50px_rgba(0,0,0,0.3)]\">\n";
-    file << "                    <div className=\"text-center mb-8\">\n";
-    
-    std::string mainTitle = view->name;
-    std::string subTitle = "Hexagen Compiled UI";
-    for (const auto& elem : view->elements) {
-        if (elem->type == "title") {
-            subTitle = elem->label;
-        }
-    }
-    file << "                        <h1 className=\"text-3xl font-extrabold bg-gradient-to-r from-white to-indigo-200 bg-clip-text text-transparent mb-2\">" << mainTitle << "</h1>\n";
-    file << "                        <p className=\"text-sm text-gray-400\">" << subTitle << "</p>\n";
-    file << "                    </div>\n";
-    
-    file << "                    <div className=\"space-y-6\">\n";
-
-    for (const auto& elem : view->elements) {
-        if (elem->type == "input") {
-            file << "                        <div>\n";
-            file << "                            <label className=\"block text-xs font-semibold uppercase text-gray-400 mb-2\">" << elem->name << "</label>\n";
-            file << "                            <input type=\"text\" value={" << elem->name << "} onChange={(e) => set" << elem->name << "(e.target.value)} className=\"w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#00f2fe] focus:bg-white/10 transition\" />\n";
-            file << "                        </div>\n";
-        } else if (elem->type == "button") {
-            size_t dotPos = elem->targetAction.find('.');
-            if (dotPos != std::string::npos) {
-                std::string sliceName = elem->targetAction.substr(0, dotPos);
-                std::string actionName = elem->targetAction.substr(dotPos + 1);
-                file << "                        <button onClick={handle" << sliceName << "_" << actionName << "} className=\"w-full bg-gradient-to-r from-[#4facfe] to-[#00f2fe] text-[#0b0f19] py-4 rounded-xl font-bold hover:scale-[1.02] transition active:scale-[0.98]\">" << elem->label << "</button>\n";
-            } else {
-                std::string pathLower = elem->targetAction;
-                std::transform(pathLower.begin(), pathLower.end(), pathLower.begin(), ::tolower);
-                file << "                        <button onClick={() => navigate('/" << pathLower << "')} className=\"w-full bg-white/5 border border-white/10 py-4 rounded-xl font-bold hover:bg-white/10 transition\">" << elem->label << "</button>\n";
+    if (program->css == "none") {
+        file << "        <>\n";
+        for (const auto& elem : view->elements) {
+            if (elem->type == "input") {
+                std::string cls = elem->className.empty() ? "" : " className=\"" + elem->className + "\"";
+                file << "            <div className=\"max-w-md mx-auto mb-4\">\n";
+                file << "                <label className=\"block text-xs font-semibold uppercase text-gray-400 mb-2\">" << elem->name << "</label>\n";
+                file << "                <input type=\"text\" value={" << elem->name << "} onChange={(e) => set" << elem->name << "(e.target.value)}" << cls << " />\n";
+                file << "            </div>\n";
+            } else if (elem->type == "button") {
+                size_t dotPos = elem->targetAction.find('.');
+                std::string clickHandler = "";
+                if (dotPos != std::string::npos) {
+                    std::string sliceName = elem->targetAction.substr(0, dotPos);
+                    std::string actionName = elem->targetAction.substr(dotPos + 1);
+                    clickHandler = "handle" + sliceName + "_" + actionName;
+                } else {
+                    std::string pathLower = elem->targetAction;
+                    std::transform(pathLower.begin(), pathLower.end(), pathLower.begin(), ::tolower);
+                    clickHandler = "() => navigate('/" + pathLower + "')";
+                }
+                std::string cls = elem->className.empty() ? "" : " className=\"" + elem->className + "\"";
+                file << "            <div className=\"max-w-md mx-auto mb-4\">\n";
+                file << "                <button onClick={" << clickHandler << "}" << cls << ">" << elem->label << "</button>\n";
+                file << "            </div>\n";
+            } else if (elem->type == "html") {
+                std::string cls = elem->className.empty() ? "" : " className=\"" + elem->className + "\"";
+                file << "            <div" << cls << " dangerouslySetInnerHTML={{ __html: `" << elem->label << "` }} />\n";
             }
         }
-    }
-    
-    file << "                    </div>\n";
+        
+        file << "            {result && (\n";
+        file << "                <div>\n";
+        file << "                    <div>API Response</div>\n";
+        file << "                    <pre>{JSON.stringify(result, null, 2)}</pre>\n";
+        file << "                </div>\n";
+        file << "            )}\n";
+    } else {
+        file << "        <div className=\"min-h-screen bg-[var(--bg-color)] text-[var(--text-color)] flex flex-col justify-center items-center relative overflow-hidden font-sans\">\n";
+        file << "            <div className=\"absolute w-[300px] h-[300px] bg-gradient-to-r from-[var(--primary-glow)] to-transparent rounded-full top-[10%] left-[15%] opacity-15 blur-[80px]\" />\n";
+        file << "            <div className=\"absolute w-[350px] h-[350px] bg-gradient-to-r from-[var(--secondary-glow)] to-transparent rounded-full bottom-[15%] right-[15%] opacity-15 blur-[80px]\" />\n";
+        file << "            \n";
+        file << "            <main className=\"w-full max-w-[550px] p-8 z-10\">\n";
+        file << "                <section className=\"bg-[var(--card-bg)] backdrop-blur-[20px] border border-[var(--border-color)] rounded-[24px] p-10 shadow-[0_20px_50px_rgba(0,0,0,0.3)]\">\n";
+        file << "                    <div className=\"text-center mb-8\">\n";
+        
+        std::string mainTitle = view->name;
+        std::string subTitle = "Hexagen Compiled UI";
+        for (const auto& elem : view->elements) {
+            if (elem->type == "title") {
+                subTitle = elem->label;
+            }
+        }
+        file << "                        <h1 className=\"text-3xl font-extrabold bg-gradient-to-r from-white to-[var(--primary-glow)] bg-clip-text text-transparent mb-2\">" << mainTitle << "</h1>\n";
+        file << "                        <p className=\"text-sm text-gray-400\">" << subTitle << "</p>\n";
+        file << "                    </div>\n";
+        
+        file << "                    <div className=\"space-y-6\">\n";
 
-    file << "                    {result && (\n";
-    file << "                        <div className=\"mt-8 bg-black/25 rounded-xl border border-white/5 p-5\">\n";
-    file << "                            <div className=\"text-xs font-semibold text-[#00f2fe] mb-2 uppercase\">API Response</div>\n";
-    file << "                            <pre className=\"font-mono text-xs text-[#e5e7eb] overflow-x-auto\">{JSON.stringify(result, null, 2)}</pre>\n";
-    file << "                        </div>\n";
-    file << "                    )}\n";
+        for (const auto& elem : view->elements) {
+            if (elem->type == "input") {
+                std::string cls = elem->className.empty() ? "" : " " + elem->className;
+                file << "                        <div>\n";
+                file << "                            <label className=\"block text-xs font-semibold uppercase text-gray-400 mb-2\">" << elem->name << "</label>\n";
+                file << "                            <input type=\"text\" value={" << elem->name << "} onChange={(e) => set" << elem->name << "(e.target.value)} className=\"w-full bg-white/5 border border-[var(--border-color)] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[var(--primary-glow)] focus:bg-white/10 transition" << cls << "\" />\n";
+                file << "                        </div>\n";
+            } else if (elem->type == "button") {
+                size_t dotPos = elem->targetAction.find('.');
+                std::string cls = elem->className.empty() ? "" : " " + elem->className;
+                if (dotPos != std::string::npos) {
+                    std::string sliceName = elem->targetAction.substr(0, dotPos);
+                    std::string actionName = elem->targetAction.substr(dotPos + 1);
+                    file << "                        <button onClick={handle" << sliceName << "_" << actionName << "} className=\"w-full bg-gradient-to-r from-[var(--secondary-glow)] to-[var(--primary-glow)] text-[var(--bg-color)] py-4 rounded-xl font-bold hover:scale-[1.02] transition active:scale-[0.98]" << cls << "\">" << elem->label << "</button>\n";
+                } else {
+                    std::string pathLower = elem->targetAction;
+                    std::transform(pathLower.begin(), pathLower.end(), pathLower.begin(), ::tolower);
+                    file << "                        <button onClick={() => navigate('/" << pathLower << "')} className=\"w-full bg-white/5 border border-[var(--border-color)] py-4 rounded-xl font-bold hover:bg-white/10 transition" << cls << "\">" << elem->label << "</button>\n";
+                }
+            } else if (elem->type == "html") {
+                std::string cls = elem->className.empty() ? "" : " className=\"" + elem->className + "\"";
+                file << "                        <div" << cls << " dangerouslySetInnerHTML={{ __html: `" << elem->label << "` }} />\n";
+            }
+        }
+        
+        file << "                    </div>\n";
+
+        file << "                    {result && (\n";
+        file << "                        <div className=\"mt-8 bg-black/25 rounded-xl border border-white/5 p-5\">\n";
+        file << "                            <div className=\"text-xs font-semibold text-[var(--primary-glow)] mb-2 uppercase\">API Response</div>\n";
+        file << "                            <pre className=\"font-mono text-xs text-[#e5e7eb] overflow-x-auto\">{JSON.stringify(result, null, 2)}</pre>\n";
+        file << "                        </div>\n";
+        file << "                    )}\n";
+    }
 
     for (const auto& elem : view->elements) {
         if (elem->type == "table") {
@@ -1563,41 +1703,79 @@ void CodeGenerator::generateReactPage(std::shared_ptr<ASTView> view) {
                 }
             }
 
-            file << "                    <div className=\"mt-8 bg-black/20 rounded-xl border border-white/10 overflow-hidden\">\n";
-            file << "                        <table className=\"w-full text-left border-collapse\">\n";
-            file << "                            <thead>\n";
-            file << "                                <tr className=\"bg-white/5 text-xs font-semibold text-gray-400 uppercase\">\n";
-            for (const auto& col : elem->columns) {
-                file << "                                    <th className=\"p-3\">" << col << "</th>\n";
+            if (program->css == "none") {
+                std::string cls = elem->className.empty() ? "" : " className=\"" + elem->className + "\"";
+                file << "                    <div" << cls << ">\n";
+                file << "                        <table>\n";
+                file << "                            <thead>\n";
+                file << "                                <tr>\n";
+                for (const auto& col : elem->columns) {
+                    file << "                                    <th>" << col << "</th>\n";
+                }
+                if (hasDeleteRoute) {
+                    file << "                                    <th>Acciones</th>\n";
+                }
+                file << "                                </tr>\n";
+                file << "                            </thead>\n";
+                file << "                            <tbody>\n";
+                file << "                                {" << elem->label << "Rows.map((row: any, idx: number) => (\n";
+                file << "                                    <tr key={idx}>\n";
+                for (const auto& col : elem->columns) {
+                    file << "                                        <td>{row." << col << "}</td>\n";
+                }
+                if (hasDeleteRoute) {
+                    std::string keyCol = elem->columns.empty() ? "id" : elem->columns[0];
+                    file << "                                        <td>\n";
+                    file << "                                            <button onClick={() => handleDelete_" << elem->label << "(row." << keyCol << ")}>Eliminar</button>\n";
+                    file << "                                        </td>\n";
+                }
+                file << "                                    </tr>\n";
+                file << "                                ))}\n";
+                file << "                            </tbody>\n";
+                file << "                        </table>\n";
+                file << "                    </div>\n";
+            } else {
+                std::string cls = elem->className.empty() ? "" : " " + elem->className;
+                file << "                    <div className=\"mt-8 bg-black/20 rounded-xl border border-white/10 overflow-hidden" << cls << "\">\n";
+                file << "                        <table className=\"w-full text-left border-collapse\">\n";
+                file << "                            <thead>\n";
+                file << "                                <tr className=\"bg-white/5 text-xs font-semibold text-gray-400 uppercase\">\n";
+                for (const auto& col : elem->columns) {
+                    file << "                                    <th className=\"p-3\">" << col << "</th>\n";
+                }
+                if (hasDeleteRoute) {
+                    file << "                                    <th className=\"p-3\">Acciones</th>\n";
+                }
+                file << "                                </tr>\n";
+                file << "                            </thead>\n";
+                file << "                            <tbody>\n";
+                file << "                                {" << elem->label << "Rows.map((row: any, idx: number) => (\n";
+                file << "                                    <tr key={idx} className=\"border-b border-white/10\">\n";
+                for (const auto& col : elem->columns) {
+                    file << "                                        <td className=\"p-3 text-sm\">{row." << col << "}</td>\n";
+                }
+                if (hasDeleteRoute) {
+                    std::string keyCol = elem->columns.empty() ? "id" : elem->columns[0];
+                    file << "                                        <td className=\"p-3 text-sm\">\n";
+                    file << "                                            <button onClick={() => handleDelete_" << elem->label << "(row." << keyCol << ")} className=\"px-3 py-1 text-xs font-semibold rounded bg-gradient-to-r from-red-500 to-rose-600 text-white hover:scale-105 active:scale-95 transition\">Eliminar</button>\n";
+                    file << "                                        </td>\n";
+                }
+                file << "                                    </tr>\n";
+                file << "                                ))}\n";
+                file << "                            </tbody>\n";
+                file << "                        </table>\n";
+                file << "                    </div>\n";
             }
-            if (hasDeleteRoute) {
-                file << "                                    <th className=\"p-3\">Acciones</th>\n";
-            }
-            file << "                                </tr>\n";
-            file << "                            </thead>\n";
-            file << "                            <tbody>\n";
-            file << "                                {" << elem->label << "Rows.map((row: any, idx: number) => (\n";
-            file << "                                    <tr key={idx} className=\"border-b border-white/10\">\n";
-            for (const auto& col : elem->columns) {
-                file << "                                        <td className=\"p-3 text-sm\">{row." << col << "}</td>\n";
-            }
-            if (hasDeleteRoute) {
-                std::string keyCol = elem->columns.empty() ? "id" : elem->columns[0];
-                file << "                                        <td className=\"p-3 text-sm\">\n";
-                file << "                                            <button onClick={() => handleDelete_" << elem->label << "(row." << keyCol << ")} className=\"px-3 py-1 text-xs font-semibold rounded bg-gradient-to-r from-red-500 to-rose-600 text-white hover:scale-105 active:scale-95 transition\">Eliminar</button>\n";
-                file << "                                        </td>\n";
-            }
-            file << "                                    </tr>\n";
-            file << "                                ))}\n";
-            file << "                            </tbody>\n";
-            file << "                        </table>\n";
-            file << "                    </div>\n";
         }
     }
 
-    file << "                </section>\n";
-    file << "            </main>\n";
-    file << "        </div>\n";
+    if (program->css == "none") {
+        file << "        </>\n";
+    } else {
+        file << "                </section>\n";
+        file << "            </main>\n";
+        file << "        </div>\n";
+    }
     file << "    );\n";
     file << "}\n";
 }

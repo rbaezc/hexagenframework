@@ -234,12 +234,13 @@ public:
     std::string name;         // Input variable name
     std::string targetAction; // Action callback
     std::vector<std::string> columns; // Table columns if type is "table"
+    std::string className = "";       // Custom CSS class names
 
     ASTViewField(std::string type, std::string label, std::string name, std::string target)
-        : type(type), label(label), name(name), targetAction(target) {}
+        : type(type), label(label), name(name), targetAction(target), className("") {}
 
     ASTViewField(std::string type, std::string label, std::vector<std::string> cols)
-        : type(type), label(label), name(""), targetAction(""), columns(cols) {}
+        : type(type), label(label), name(""), targetAction(""), columns(cols), className("") {}
 
     void print(int indent = 0) const override {
         std::cout << std::string(indent, ' ') << "ViewField (" << type << "): \"" << label << "\"";

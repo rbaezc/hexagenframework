@@ -170,6 +170,7 @@ std::vector<Token> Lexer::tokenize() {
             else if (ident == "input") type = TokenType::INPUT;
             else if (ident == "button") type = TokenType::BUTTON;
             else if (ident == "table") type = TokenType::TABLE;
+            else if (ident == "html") type = TokenType::HTML;
             else if (ident == "api") type = TokenType::API;
             else if (ident == "route") type = TokenType::ROUTE;
             else if (ident == "secure") type = TokenType::SECURE;

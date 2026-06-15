@@ -205,10 +205,11 @@ std::shared_ptr<ASTView> Parser::parseView() {
     auto view = std::make_shared<ASTView>(viewName);
 
     while (!check(TokenType::RBRACE) && !check(TokenType::END_OF_FILE)) {
+        std::shared_ptr<ASTViewField> field = nullptr;
         if (match(TokenType::TITLE)) {
             const auto& strTok = peek();
             consume(TokenType::STRING_LITERAL, "Expected string literal after 'title'");
-            view->elements.push_back(std::make_shared<ASTViewField>("title", strTok.value, "", ""));
+            field = std::make_shared<ASTViewField>("title", strTok.value, "", "");
         } else if (match(TokenType::INPUT)) {
             const auto& varTok = peek();
             consume(TokenType::IDENTIFIER, "Expected input variable name");
@@ -221,7 +222,7 @@ std::shared_ptr<ASTView> Parser::parseView() {
             } else {
                 throw std::runtime_error("Expected data type for input at line " + std::to_string(typeTok.line));
             }
-            view->elements.push_back(std::make_shared<ASTViewField>("input", varTok.value, varTok.value, ""));
+            field = std::make_shared<ASTViewField>("input", varTok.value, varTok.value, "");
         } else if (match(TokenType::BUTTON)) {
             const auto& labelTok = peek();
             consume(TokenType::STRING_LITERAL, "Expected string literal for button label");
@@ -236,7 +237,7 @@ std::shared_ptr<ASTView> Parser::parseView() {
                 consume(TokenType::IDENTIFIER, "Expected action name after '.' in button target");
                 targetAction += "." + target2.value;
             }
-            view->elements.push_back(std::make_shared<ASTViewField>("button", labelTok.value, "", targetAction));
+            field = std::make_shared<ASTViewField>("button", labelTok.value, "", targetAction);
         } else if (match(TokenType::TABLE)) {
             const auto& sliceTok = peek();
             consume(TokenType::IDENTIFIER, "Expected slice identifier for table datasource");
@@ -252,10 +253,24 @@ std::shared_ptr<ASTView> Parser::parseView() {
                 consume(TokenType::IDENTIFIER, "Expected column name after ','");
                 cols.push_back(colTok.value);
             }
-            view->elements.push_back(std::make_shared<ASTViewField>("table", sliceTok.value, cols));
+            field = std::make_shared<ASTViewField>("table", sliceTok.value, cols);
+        } else if (match(TokenType::HTML)) {
+            const auto& strTok = peek();
+            consume(TokenType::STRING_LITERAL, "Expected string literal after 'html'");
+            field = std::make_shared<ASTViewField>("html", strTok.value, "", "");
         } else {
             const auto& tok = peek();
-            throw std::runtime_error("Expected 'title', 'input', 'button', or 'table' in view definition, got: '" + tok.value + "' at line " + std::to_string(tok.line));
+            throw std::runtime_error("Expected 'title', 'input', 'button', 'table', or 'html' in view definition, got: '" + tok.value + "' at line " + std::to_string(tok.line));
+        }
+
+        if (field) {
+            if (check(TokenType::IDENTIFIER) && peek().value == "class") {
+                consume(TokenType::IDENTIFIER, "class");
+                const auto& classTok = peek();
+                consume(TokenType::STRING_LITERAL, "Expected string literal for class name");
+                field->className = classTok.value;
+            }
+            view->elements.push_back(field);
         }
     }
 
