@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -20,7 +21,7 @@ import (
 	"time"
 )
 
-const Version = "v0.3.0"
+const Version = "v2.0.0"
 
 func printUsage() {
 	fmt.Printf("Hexagen Framework CLI (hf) %s\n", Version)
@@ -238,13 +239,18 @@ func handleDev(inputPath string) {
 
 		// 2. Compile generated C++
 		fmt.Println("[Hexagen Dev] Compiling...")
-		compileArgs := []string{"-std=c++17", tempCppFile, "-o", outputExe, "-pthread"}
+		compileArgs := []string{"-std=c++20", tempCppFile, "-o", outputExe, "-pthread"}
+		compileArgs = addModuleFlags(compileArgs)
 		if strings.Contains(cppCode, "Database Engine: sqlite") {
 			compileArgs = append(compileArgs, "-lsqlite3")
 		} else if strings.Contains(cppCode, "Database Engine: postgres") || strings.Contains(cppCode, "Database Engine: postgresql") {
 			compileArgs = append(compileArgs, "-lpq")
 		} else if strings.Contains(cppCode, "Database Engine: mysql") {
 			compileArgs = append(compileArgs, "-lmysqlclient")
+		}
+		if strings.Contains(cppCode, "#include \"webview.h\"") {
+			compileArgs = append(compileArgs, "-DWEBVIEW_GTK")
+			compileArgs = append(compileArgs, getPkgConfigFlags()...)
 		}
 		compileCmd := exec.Command("g++", compileArgs...)
 		compileCmd.Stdout = os.Stdout
@@ -375,6 +381,16 @@ func main() {
 		os.Exit(0)
 	}
 
+	if command == "add" {
+		if len(os.Args) < 3 {
+			fmt.Println("Error: Missing package name.")
+			fmt.Println("Usage: hf add <package_name>")
+			os.Exit(1)
+		}
+		handleAdd(os.Args[2])
+		os.Exit(0)
+	}
+
 	// Determine input path and output exe dynamically
 	inputPath := "."
 	outputExe := "a.out"
@@ -443,13 +459,18 @@ func main() {
 
 		// Compile
 		fmt.Printf("[Hexagen] Compiling generated C++ code to: %s\n", outputExe)
-		compileArgs := []string{"-std=c++17", tempCppFile, "-o", outputExe, "-pthread"}
+		compileArgs := []string{"-std=c++20", tempCppFile, "-o", outputExe, "-pthread"}
+		compileArgs = addModuleFlags(compileArgs)
 		if strings.Contains(cppCode, "Database Engine: sqlite") {
 			compileArgs = append(compileArgs, "-lsqlite3")
 		} else if strings.Contains(cppCode, "Database Engine: postgres") || strings.Contains(cppCode, "Database Engine: postgresql") {
 			compileArgs = append(compileArgs, "-lpq")
 		} else if strings.Contains(cppCode, "Database Engine: mysql") {
 			compileArgs = append(compileArgs, "-lmysqlclient")
+		}
+		if strings.Contains(cppCode, "#include \"webview.h\"") {
+			compileArgs = append(compileArgs, "-DWEBVIEW_GTK")
+			compileArgs = append(compileArgs, getPkgConfigFlags()...)
 		}
 		compileCmd := exec.Command("g++", compileArgs...)
 		compileCmd.Stdout = os.Stdout
@@ -1894,3 +1915,142 @@ func getCompletions(text string, pos Position) []CompletionItem {
 
 	return items
 }
+
+func getPkgConfigFlags() []string {
+	cmd := exec.Command("pkg-config", "--cflags", "--libs", "gtk+-3.0", "webkit2gtk-4.0")
+	out, err := cmd.Output()
+	if err != nil {
+		cmd = exec.Command("pkg-config", "--cflags", "--libs", "gtk+-3.0", "webkit2gtk-4.1")
+		out, err = cmd.Output()
+		if err != nil {
+			return []string{}
+		}
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	return fields
+}
+
+func addModuleFlags(compileArgs []string) []string {
+	if _, err := os.Stat(".hexagen_modules"); err == nil {
+		filepath.Walk(".hexagen_modules", func(path string, info fs.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				compileArgs = append(compileArgs, "-I"+path)
+			} else if strings.HasSuffix(path, ".cpp") {
+				compileArgs = append(compileArgs, path)
+			}
+			return nil
+		})
+	}
+	return compileArgs
+}
+
+func downloadFile(url string, destPath string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %s", resp.Status)
+	}
+	err = os.MkdirAll(filepath.Dir(destPath), 0755)
+	if err != nil {
+		return err
+	}
+	out, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+func handleAdd(packageName string) {
+	fmt.Printf("📦 Installing package '%s'...\n", packageName)
+	destDir := filepath.Join(".hexagen_modules", packageName)
+	err := os.MkdirAll(destDir, 0755)
+	if err != nil {
+		fmt.Printf("❌ Error creating modules directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	switch packageName {
+	case "json":
+		url := "https://raw.githubusercontent.com/nlohmann/json/develop/single_include/nlohmann/json.hpp"
+		destFile := filepath.Join(destDir, "json.hpp")
+		err = downloadFile(url, destFile)
+	case "jwt":
+		url := "https://raw.githubusercontent.com/Thalhammer/jwt-cpp/master/include/jwt-cpp/jwt.h"
+		destFile := filepath.Join(destDir, "jwt.h")
+		err = downloadFile(url, destFile)
+	case "smtp":
+		destFile := filepath.Join(destDir, "smtp.hpp")
+		smtpContent := `// Self-contained simple SMTP client in C++
+#pragma once
+#include <string>
+#include <iostream>
+#include <sstream>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <algorithm>
+
+class SMTPClient {
+public:
+    static bool sendEmail(const std::string& host, int port, const std::string& from, const std::string& to, const std::string& subject, const std::string& body) {
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) return false;
+        struct hostent* server = gethostbyname(host.c_str());
+        if (!server) { close(sock); return false; }
+        struct sockaddr_in addr;
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        std::copy((char*)server->h_addr, (char*)server->h_addr + server->h_length, (char*)&addr.sin_addr.s_addr);
+        if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(sock); return false; }
+        
+        auto read_resp = [sock]() {
+            char buf[1024];
+            int n = recv(sock, buf, 1023, 0);
+            if (n > 0) { buf[n] = '\0'; }
+        };
+        
+        auto send_cmd = [sock, read_resp](const std::string& cmd) {
+            send(sock, cmd.c_str(), cmd.length(), 0);
+            read_resp();
+        };
+
+        read_resp();
+        send_cmd("HELO localhost\r\n");
+        send_cmd("MAIL FROM:<" + from + ">\r\n");
+        send_cmd("RCPT TO:<" + to + ">\r\n");
+        send_cmd("DATA\r\n");
+        std::stringstream msg;
+        msg << "From: " << from << "\r\n"
+            << "To: " << to << "\r\n"
+            << "Subject: " << subject << "\r\n\r\n"
+            << body << "\r\n.\r\n";
+        send_cmd(msg.str());
+        send_cmd("QUIT\r\n");
+        close(sock);
+        return true;
+    }
+};
+`
+		err = os.WriteFile(destFile, []byte(smtpContent), 0644)
+	default:
+		fmt.Printf("❌ Unknown package: %s. Supported: json, jwt, smtp\n", packageName)
+		os.Exit(1)
+	}
+
+	if err != nil {
+		fmt.Printf("❌ Failed to install package: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✅ Package '%s' installed successfully under .hexagen_modules/%s/\n", packageName, packageName)
+}
+

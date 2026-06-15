@@ -357,6 +357,7 @@ public:
     std::string dbType = "jsonl"; // Default database type
     std::string frontend = "vanilla"; // Default frontend type
     std::string css = "vanilla";       // Default CSS type
+    std::string target = "web";        // Default target (web or desktop)
     std::vector<std::shared_ptr<ASTSlice>> slices;
     std::vector<std::shared_ptr<ASTView>> views;
     std::vector<std::shared_ptr<ASTApi>> apis;

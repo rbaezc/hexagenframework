@@ -170,6 +170,7 @@ int main(int argc, char* argv[]) {
             std::string tempCppFile = "temp_codegen.cpp";
             int serverPid = 0;
             std::string currentDbType = "jsonl";
+            std::string currentTarget = "web";
 
             auto startServer = [&]() {
                 std::string dbFlags = "";
@@ -177,7 +178,23 @@ int main(int argc, char* argv[]) {
                 else if (currentDbType == "postgres" || currentDbType == "postgresql") dbFlags = " -lpq";
                 else if (currentDbType == "mysql") dbFlags = " -lmysqlclient";
 
-                std::string compileCmd = "g++ -std=c++17 " + tempCppFile + " -o " + outputExe + " -pthread" + dbFlags;
+                std::string desktopFlags = "";
+                if (currentTarget == "desktop") {
+                    desktopFlags = " -DWEBVIEW_GTK `pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.0 2>/dev/null || pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.1`";
+                }
+
+                std::string moduleFlags = "";
+                if (fs::exists(".hexagen_modules")) {
+                    for (const auto& entry : fs::recursive_directory_iterator(".hexagen_modules")) {
+                        if (entry.is_directory()) {
+                            moduleFlags += " -I" + entry.path().string();
+                        } else if (entry.is_regular_file() && entry.path().extension() == ".cpp") {
+                            moduleFlags += " " + entry.path().string();
+                        }
+                    }
+                }
+
+                std::string compileCmd = "g++ -std=c++20 " + tempCppFile + " -o " + outputExe + " -pthread" + dbFlags + desktopFlags + moduleFlags;
                 std::cout << "[Hexagen Dev] Compiling..." << std::endl;
                 int res = std::system(compileCmd.c_str());
                 if (res != 0) {
@@ -245,6 +262,7 @@ int main(int argc, char* argv[]) {
                     CodeGenerator codegen(program);
                     std::string cppCode = codegen.generateSourceCode(true);
                     currentDbType = program->dbType;
+                    currentTarget = program->target;
 
 
                     std::ofstream tempFile(tempCppFile);
@@ -374,9 +392,23 @@ int main(int argc, char* argv[]) {
             else if (program->dbType == "postgres" || program->dbType == "postgresql") dbFlags = " -lpq";
             else if (program->dbType == "mysql") dbFlags = " -lmysqlclient";
 
+            std::string desktopFlags = "";
+            if (program->target == "desktop") {
+                desktopFlags = " -DWEBVIEW_GTK `pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.0 2>/dev/null || pkg-config --cflags --libs gtk+-3.0 webkit2gtk-4.1`";
+            }
 
+            std::string moduleFlags = "";
+            if (fs::exists(".hexagen_modules")) {
+                for (const auto& entry : fs::recursive_directory_iterator(".hexagen_modules")) {
+                    if (entry.is_directory()) {
+                        moduleFlags += " -I" + entry.path().string();
+                    } else if (entry.is_regular_file() && entry.path().extension() == ".cpp") {
+                        moduleFlags += " " + entry.path().string();
+                    }
+                }
+            }
 
-            std::string compileCmd = "g++ -std=c++17 " + tempCppFile + " -o " + outputExe + " -pthread" + dbFlags;
+            std::string compileCmd = "g++ -std=c++20 " + tempCppFile + " -o " + outputExe + " -pthread" + dbFlags + desktopFlags + moduleFlags;
             std::cout << "[Hexagen] Compiling generated C++ code: " << compileCmd << "\n";
             int compileResult = std::system(compileCmd.c_str());
 

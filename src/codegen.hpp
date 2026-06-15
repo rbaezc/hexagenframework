@@ -16,6 +16,7 @@ private:
     std::string generateHTMLContent(std::shared_ptr<ASTView> view);
     void generateReactFrontend();
     void generateReactPage(std::shared_ptr<ASTView> view);
+    std::string generateAdminHTML();
 
 public:
     CodeGenerator(std::shared_ptr<ASTProgram> program) : program(program) {}

@@ -167,7 +167,11 @@ std::shared_ptr<ASTStatement> Parser::parseStatement() {
     } else if (check(TokenType::IDENTIFIER)) {
         const auto& nameTok = advance();
         std::string name = nameTok.value;
-        
+        while (match(TokenType::DOT)) {
+            const auto& memberTok = peek();
+            consume(TokenType::IDENTIFIER, "Expected identifier after '.'");
+            name += "." + memberTok.value;
+        }
         if (match(TokenType::EQUALS)) {
             auto expr = parseExpression();
             return std::make_shared<ASTAssignmentStatement>(name, expr);
@@ -394,6 +398,10 @@ void Parser::parseConfig(std::shared_ptr<ASTProgram> program) {
             const auto& valTok = peek();
             consume(TokenType::IDENTIFIER, "Expected CSS type identifier (e.g., vanilla, tailwind)");
             program->css = valTok.value;
+        } else if (keyTok.value == "target") {
+            const auto& valTok = peek();
+            consume(TokenType::IDENTIFIER, "Expected target identifier (e.g., web, desktop)");
+            program->target = valTok.value;
         } else {
             advance(); // consume value
         }

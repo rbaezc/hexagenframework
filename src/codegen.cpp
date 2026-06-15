@@ -1,4 +1,5 @@
 #include "codegen.hpp"
+#include "webview_content.hpp"
 #include <sstream>
 #include <algorithm>
 #include <cctype>
@@ -47,7 +48,12 @@ std::string CodeGenerator::generateStatement(std::shared_ptr<ASTStatement> stmt)
         }
         ss << "        }\n";
     } else if (auto callStmt = std::dynamic_pointer_cast<ASTCallStatement>(stmt)) {
-        ss << "        " << callStmt->actionName << "(";
+        std::string callName = callStmt->actionName;
+        size_t dotPos = callName.find('.');
+        if (dotPos != std::string::npos) {
+            callName.replace(dotPos, 1, "::");
+        }
+        ss << "        " << callName << "(";
         for (size_t i = 0; i < callStmt->arguments.size(); ++i) {
             ss << generateExpression(callStmt->arguments[i]);
             if (i + 1 < callStmt->arguments.size()) ss << ", ";
@@ -1106,7 +1112,35 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
        << "            }\n"
        << "        }\n";
     
-    ss << "        window.onload = refreshTables;\n"
+    ss << "        // LiveView Client-side Script (Phase 2)\n"
+       << "        const liveSocket = new WebSocket('ws://' + window.location.host + '/live');\n"
+       << "        liveSocket.onmessage = function(event) {\n"
+       << "            try {\n"
+       << "                const msg = JSON.parse(event.data);\n"
+       << "                if (msg.event === 'action') {\n"
+       << "                    refreshTables();\n"
+       << "                } else if (msg.event === 'input_change') {\n"
+       << "                    const input = document.getElementById('input-' + msg.field);\n"
+       << "                    if (input && input.value !== msg.value) {\n"
+       << "                        input.value = msg.value;\n"
+       << "                    }\n"
+       << "                }\n"
+       << "            } catch(e) {}\n"
+       << "        };\n"
+       << "        function setupLiveEvents() {\n"
+       << "            document.querySelectorAll('.form-input').forEach(input => {\n"
+       << "                input.addEventListener('input', () => {\n"
+       << "                    liveSocket.send(JSON.stringify({\n"
+       << "                        event: 'input_change',\n"
+       << "                        field: input.name,\n"
+       << "                        value: input.value\n"
+       << "                    }));\n"
+       << "                });\n"
+       << "            });\n"
+       << "        }\n"
+       << "        liveSocket.onopen = setupLiveEvents;\n\n";
+     
+    ss << "        window.onload = () => { refreshTables(); setupLiveEvents(); };\n"
        << "    </script>\n"
        << "</body>\n"
        << "</html>\n";
@@ -1569,6 +1603,13 @@ void CodeGenerator::generateReactPage(std::shared_ptr<ASTView> view) {
 }
 
 std::string CodeGenerator::generateSourceCode(bool includeMain) {
+    if (program->target == "desktop") {
+        std::ofstream wvFile("webview.h");
+        if (wvFile.is_open()) {
+            wvFile << WEBVIEW_H_CONTENT;
+            wvFile.close();
+        }
+    }
     if (program->frontend == "react") {
         generateReactFrontend();
     }
@@ -1622,7 +1663,66 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     ss << "#include <queue>\n";
     ss << "#include <unordered_map>\n";
     ss << "#include <arpa/inet.h>\n";
-    ss << "#include <condition_variable>\n\n";
+    ss << "#include <condition_variable>\n";
+    ss << "#include <coroutine>\n";
+    ss << "\n// C++20 Coroutine Async server components\n"
+       << "struct Task {\n"
+       << "    struct promise_type {\n"
+       << "        Task get_return_object() { return {}; }\n"
+       << "        std::suspend_never initial_suspend() { return {}; }\n"
+       << "        std::suspend_never final_suspend() noexcept { return {}; }\n"
+       << "        void return_void() {}\n"
+       << "        void unhandled_exception() {}\n"
+       << "    };\n"
+       << "};\n\n"
+       << "struct AsyncRead {\n"
+       << "    int fd;\n"
+       << "    std::string& out_req;\n"
+       << "    bool await_ready() noexcept { return false; }\n"
+       << "    void await_suspend(std::coroutine_handle<> h) noexcept {\n"
+       << "        std::thread([this, h]() {\n"
+       << "            char buffer[4096];\n"
+       << "            std::string req;\n"
+       << "            while (true) {\n"
+       << "                int valread = recv(fd, buffer, sizeof(buffer) - 1, 0);\n"
+       << "                if (valread <= 0) break;\n"
+       << "                buffer[valread] = '\\0';\n"
+       << "                req += buffer;\n"
+       << "                if (req.find(\"\\r\\n\\r\\n\") != std::string::npos) break;\n"
+       << "                if (req.find(\"Content-Length:\") != std::string::npos) {\n"
+       << "                    size_t pos = req.find(\"Content-Length:\");\n"
+       << "                    size_t end = req.find(\"\\r\\n\", pos);\n"
+       << "                    if (end != std::string::npos) {\n"
+       << "                        std::string lenStr = req.substr(pos + 15, end - (pos + 15));\n"
+       << "                        size_t len = std::stoul(lenStr);\n"
+       << "                        size_t bodyPos = req.find(\"\\r\\n\\r\\n\");\n"
+       << "                        if (bodyPos != std::string::npos && req.length() >= bodyPos + 4 + len) {\n"
+       << "                            break;\n"
+       << "                        }\n"
+       << "                    }\n"
+       << "                }\n"
+       << "            }\n"
+       << "            out_req = req;\n"
+       << "            h.resume();\n"
+       << "        }).detach();\n"
+       << "    }\n"
+       << "    void await_resume() noexcept {}\n"
+       << "};\n\n";
+    if (program->target == "desktop") {
+        ss << "#include \"webview.h\"\n";
+    }
+    if (std::filesystem::exists(".hexagen_modules")) {
+        ss << "// Auto-included Hexagen Modules\n";
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(".hexagen_modules")) {
+            if (entry.is_regular_file()) {
+                auto ext = entry.path().extension().string();
+                if (ext == ".h" || ext == ".hpp") {
+                    ss << "#include \"" << entry.path().filename().string() << "\"\n";
+                }
+            }
+        }
+    }
+    ss << "\n";
 
     ss << "// Asynchronous Job Queue and Worker Pool\n"
        << "std::queue<std::function<void()>> global_job_queue;\n"
@@ -2405,6 +2505,11 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "\n)HTML\";\n\n";
     }
 
+    ss << "// AutoCRUD Admin Portal HTML\n";
+    ss << "const char* HTML_ADMIN = R\"HTML(\n";
+    ss << generateAdminHTML();
+    ss << "\n)HTML\";\n\n";
+
     if (!program->views.empty()) {
         ss << "const char* HTML_CONTENT = HTML_" << program->views[0]->name << ";\n\n";
     } else {
@@ -2412,32 +2517,10 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     }
 
     if (includeMain) {
-        ss << "int main() {\n";
-        ss << "    initDatabase();\n";
-        ss << "    // Spawn worker threads for background jobs\n";
-        ss << "    for (int i = 0; i < 4; ++i) {\n";
-        ss << "        std::thread(job_worker_thread).detach();\n";
-        ss << "    }\n";
-        ss << "    int server_fd, client_fd;\n";
-        ss << "    struct sockaddr_in address;\n";
-        ss << "    int opt = 1;\n";
-        ss << "    int addrlen = sizeof(address);\n";
-        ss << "    int port = 8080;\n\n";
-        
-        ss << "    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) return 1;\n";
-        ss << "    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));\n";
-        ss << "    address.sin_family = AF_INET;\n";
-        ss << "    address.sin_addr.s_addr = INADDR_ANY;\n";
-        ss << "    address.sin_port = htons(port);\n\n";
-        
-        ss << "    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) return 1;\n";
-        ss << "    if (listen(server_fd, 5) < 0) return 1;\n\n";
-        ss << "    std::cout << \"🏎️  [Hexagen Server] App running at http://localhost:\" << port << std::endl;\n\n";
-        
-        ss << "    while (true) {\n";
-        ss << "        if ((client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) continue;\n";
-        ss << "        std::string req = readHttpRequest(client_fd);\n";
-        ss << "        if (!req.empty()) {\n";
+        ss << "Task handle_client(int client_fd, struct sockaddr_in address, int addrlen) {\n";
+        ss << "    std::string req;\n";
+        ss << "    co_await AsyncRead{client_fd, req};\n";
+        ss << "    if (!req.empty()) {\n";
         if (program->frontend == "react") {
             ss << "            bool handled_static = false;\n";
             ss << "            if (req.rfind(\"GET /\", 0) == 0 && req.rfind(\"GET /api/\", 0) != 0) {\n";
@@ -2476,7 +2559,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             ss << "            }\n";
             ss << "            if (handled_static) {\n";
             ss << "                close(client_fd);\n";
-            ss << "                continue;\n";
+            ss << "                co_return;\n";
             ss << "            }\n";
         }
         if (hasCors) {
@@ -2489,7 +2572,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             ss << "                     << \"Content-Length: 0\\r\\n\\r\\n\";\n";
             ss << "                send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
             ss << "                close(client_fd);\n";
-            ss << "                continue;\n";
+            ss << "                co_return;\n";
             ss << "            }\n";
         }
         if (hasRateLimit) {
@@ -2525,7 +2608,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             ss << "                         << msg;\n";
             ss << "                    send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
             ss << "                    close(client_fd);\n";
-            ss << "                    continue;\n";
+            ss << "                    co_return;\n";
             ss << "                }\n";
             ss << "            }\n";
         }
@@ -2533,6 +2616,30 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "            std::string upgradeHeader = getHeaderValue(req, \"Upgrade\");\n";
         ss << "            for (char &c : upgradeHeader) { if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a'; }\n";
         ss << "            if (upgradeHeader == \"websocket\") {\n";
+        ss << "                if (req.find(\"GET /live \") != std::string::npos) {\n";
+        ss << "                    std::string wsKey = getHeaderValue(req, \"Sec-WebSocket-Key\");\n";
+        ss << "                    if (!wsKey.empty()) {\n";
+        ss << "                        std::string acceptKey = getWebSocketAcceptKey(wsKey);\n";
+        ss << "                        std::stringstream handshake;\n";
+        ss << "                        handshake << \"HTTP/1.1 101 Switching Protocols\\r\\n\"\n";
+        ss << "                                  << \"Upgrade: websocket\\r\\n\"\n";
+        ss << "                                  << \"Connection: Upgrade\\r\\n\"\n";
+        ss << "                                  << \"Sec-WebSocket-Accept: \" << acceptKey << \"\\r\\n\\r\\n\";\n";
+        ss << "                        send(client_fd, handshake.str().c_str(), handshake.str().length(), 0);\n";
+        ss << "                        wsUpgraded = true;\n";
+        ss << "                        std::thread([client_fd]() {\n";
+        ss << "                            register_ws_client(client_fd);\n";
+        ss << "                            std::string msg;\n";
+        ss << "                            while (readWebSocketFrame(client_fd, msg)) {\n";
+        ss << "                                if (!msg.empty()) {\n";
+        ss << "                                    std::cout << \"[LiveView WS] Received: \" << msg << std::endl;\n";
+        ss << "                                    broadcast_ws_message(msg, client_fd);\n";
+        ss << "                                }\n";
+        ss << "                            }\n";
+        ss << "                            unregister_ws_client(client_fd);\n";
+        ss << "                        }).detach();\n";
+        ss << "                    }\n";
+        ss << "                }\n";
 
         for (const auto& api : program->apis) {
             for (const auto& r : api->routes) {
@@ -2594,11 +2701,89 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         }
 
         ss << "            }\n";
-        ss << "            if (wsUpgraded) continue;\n";
+        ss << "            if (wsUpgraded) co_return;\n";
+
         // Dynamic multi-view routing
         bool isFirstRoute = true;
+
+        // Admin Portal Page
+        ss << "            if (req.rfind(\"GET /admin \", 0) == 0 || req.find(\"GET /admin?\") != std::string::npos) {\n";
+        ss << "                std::string html = HTML_ADMIN;\n";
+        ss << "                std::stringstream resp;\n";
+        ss << "                resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
+        ss << "                     << \"Content-Type: text/html; charset=utf-8\\r\\n\"\n";
+        ss << "                     << \"Content-Length: \" << html.length() << \"\\r\\n\\r\\n\"\n";
+        ss << "                     << html;\n";
+        ss << "                send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+        ss << "            }\n";
+        isFirstRoute = false;
+
+        // Admin CRUD APIs
+        for (const auto& slice : program->slices) {
+            ss << "            else if (req.find(\"GET /api/admin/" << slice->name << "\") != std::string::npos) {\n";
+            ss << "                std::string json = " << slice->name << "::getAllAsJSON(req);\n";
+            ss << "                std::stringstream resp;\n";
+            ss << "                resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
+            ss << "                     << \"Content-Type: application/json\\r\\n\"\n";
+            ss << "                     << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+            ss << "                     << \"Content-Length: \" << json.length() << \"\\r\\n\\r\\n\"\n";
+            ss << "                     << json;\n";
+            ss << "                send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+            ss << "            }\n";
+
+            ss << "            else if (req.find(\"POST /api/admin/" << slice->name << "\") != std::string::npos) {\n";
+            ss << "                size_t bodyPos = req.find(\"\\r\\n\\r\\n\");\n";
+            ss << "                std::string body = (bodyPos != std::string::npos) ? req.substr(bodyPos + 4) : \"\";\n";
+            ss << "                " << slice->name << " instance;\n";
+            for (const auto& field : slice->fields) {
+                ss << "                {\n";
+                ss << "                    std::string val = getJSONVal(body, \"" << field->name << "\");\n";
+                if (field->type == DataType::INT || field->type == DataType::RELATION) {
+                    ss << "                    if (!val.empty()) instance." << field->name << " = safeStoi(val);\n";
+                } else if (field->type == DataType::STRING) {
+                    ss << "                    if (!val.empty()) instance." << field->name << " = val;\n";
+                } else if (field->type == DataType::FLOAT) {
+                    ss << "                    if (!val.empty()) instance." << field->name << " = safeStod(val);\n";
+                } else if (field->type == DataType::BOOL) {
+                    ss << "                    if (!val.empty()) instance." << field->name << " = (val == \"true\" || val == \"1\");\n";
+                }
+                ss << "                }\n";
+            }
+            ss << "                instance.save();\n";
+            ss << "                std::string msg = \"{\\\"status\\\":\\\"success\\\"}\";\n";
+            ss << "                std::stringstream resp;\n";
+            ss << "                resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
+            ss << "                     << \"Content-Type: application/json\\r\\n\"\n";
+            ss << "                     << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+            ss << "                     << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\"\n";
+            ss << "                     << msg;\n";
+            ss << "                send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+            ss << "            }\n";
+
+            ss << "            else if (req.find(\"DELETE /api/admin/" << slice->name << "\") != std::string::npos) {\n";
+            ss << "                size_t bodyPos = req.find(\"\\r\\n\\r\\n\");\n";
+            ss << "                std::string body = (bodyPos != std::string::npos) ? req.substr(bodyPos + 4) : \"\";\n";
+            std::string firstField = "";
+            if (!slice->fields.empty()) {
+                firstField = slice->fields[0]->name;
+            }
+            if (!firstField.empty()) {
+                ss << "                std::string valToDelete = getJSONVal(body, \"" << firstField << "\");\n";
+                ss << "                " << slice->name << "::deleteRecord(\"" << firstField << "\", valToDelete);\n";
+            }
+            ss << "                std::string msg = \"{\\\"status\\\":\\\"success\\\"}\";\n";
+            ss << "                std::stringstream resp;\n";
+            ss << "                resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
+            ss << "                     << \"Content-Type: application/json\\r\\n\"\n";
+            ss << "                     << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+            ss << "                     << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\"\n";
+            ss << "                     << msg;\n";
+            ss << "                send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+            ss << "            }\n";
+        }
+
         if (program->views.empty()) {
-            ss << "            if (req.rfind(\"GET / \", 0) == 0 || req.rfind(\"GET /index.html\", 0) == 0 || req.rfind(\"GET /home \", 0) == 0) {\n";
+            ss << "            else if (req.rfind(\"GET / \", 0) == 0 || req.rfind(\"GET /index.html\", 0) == 0 || req.rfind(\"GET /home \", 0) == 0) {\n";
             ss << "                std::string html = HTML_CONTENT;\n";
             ss << "                std::stringstream resp;\n";
             ss << "                resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
@@ -2609,13 +2794,14 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             ss << "            }\n";
             isFirstRoute = false;
         } else {
+            bool isFirstView = true;
             for (const auto& view : program->views) {
                 std::string viewNameLower = view->name;
                 std::transform(viewNameLower.begin(), viewNameLower.end(), viewNameLower.begin(), ::tolower);
                 
-                if (isFirstRoute) {
-                    ss << "            if (req.rfind(\"GET /" << viewNameLower << " \", 0) == 0 || req.rfind(\"GET / \", 0) == 0 || req.rfind(\"GET /index.html\", 0) == 0) {\n";
-                    isFirstRoute = false;
+                if (isFirstView) {
+                    ss << "            else if (req.rfind(\"GET /" << viewNameLower << " \", 0) == 0 || req.rfind(\"GET / \", 0) == 0 || req.rfind(\"GET /index.html\", 0) == 0) {\n";
+                    isFirstView = false;
                 } else {
                     ss << "            else if (req.rfind(\"GET /" << viewNameLower << " \", 0) == 0) {\n";
                 }
@@ -2818,7 +3004,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                     ss << "                         << msg;\n";
                     ss << "                    send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
                     ss << "                    close(client_fd);\n";
-                    ss << "                    continue;\n";
+                    ss << "                    co_return;\n";
                     ss << "                }\n";
                 }
                 ss << "                size_t bodyPos = req.find(\"\\r\\n\\r\\n\");\n";
@@ -2912,9 +3098,54 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "                send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
         ss << "            }\n";
 
-        ss << "        }\n";
-        ss << "        close(client_fd);\n";
         ss << "    }\n";
+        ss << "    close(client_fd);\n";
+        ss << "}\n\n";
+
+        ss << "int main() {\n";
+        ss << "    initDatabase();\n";
+        ss << "    // Spawn worker threads for background jobs\n";
+        ss << "    for (int i = 0; i < 4; ++i) {\n";
+        ss << "        std::thread(job_worker_thread).detach();\n";
+        ss << "    }\n";
+        ss << "    int server_fd, client_fd;\n";
+        ss << "    struct sockaddr_in address;\n";
+        ss << "    int opt = 1;\n";
+        ss << "    int addrlen = sizeof(address);\n";
+        ss << "    int port = 8080;\n\n";
+        ss << "    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) return 1;\n";
+        ss << "    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));\n";
+        ss << "    address.sin_family = AF_INET;\n";
+        ss << "    address.sin_addr.s_addr = INADDR_ANY;\n";
+        ss << "    address.sin_port = htons(port);\n\n";
+        ss << "    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) return 1;\n";
+        ss << "    if (listen(server_fd, 5) < 0) return 1;\n\n";
+        ss << "    std::cout << \"🏎️  [Hexagen Server] App running at http://localhost:\" << port << std::endl;\n\n";
+
+        if (program->target == "desktop") {
+            ss << "    std::thread([server_fd, address, addrlen, port]() mutable {\n";
+            ss << "        int client_fd;\n";
+            ss << "        while (true) {\n";
+            ss << "            if ((client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) continue;\n";
+            ss << "            handle_client(client_fd, address, addrlen);\n";
+            ss << "        }\n";
+            ss << "    }).detach();\n\n";
+            ss << "    // Start webview event loop\n";
+            ss << "    try {\n";
+            ss << "        webview::webview w(true, nullptr);\n";
+            ss << "        w.set_title(\"Hexagen Desktop App\");\n";
+            ss << "        w.set_size(1024, 768, WEBVIEW_HINT_NONE);\n";
+            ss << "        w.navigate(\"http://localhost:\" + std::to_string(port));\n";
+            ss << "        w.run();\n";
+            ss << "    } catch (const std::exception& e) {\n";
+            ss << "        std::cerr << \"WebView error: \" << e.what() << std::endl;\n";
+            ss << "    }\n";
+        } else {
+            ss << "    while (true) {\n";
+            ss << "        if ((client_fd = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) continue;\n";
+            ss << "        handle_client(client_fd, address, addrlen);\n";
+            ss << "    }\n";
+        }
         ss << "    close(server_fd);\n";
         ss << "    return 0;\n";
         ss << "}\n";
@@ -2922,3 +3153,274 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
 
     return ss.str();
 }
+
+std::string CodeGenerator::generateAdminHTML() {
+    std::stringstream ss;
+    ss << R"HTML(<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Hexagen Admin Portal</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+<style>
+body {
+    margin: 0;
+    font-family: 'Outfit', sans-serif;
+    background: #0b0f19;
+    color: #f3f4f6;
+    display: flex;
+    height: 100vh;
+}
+sidebar {
+    width: 260px;
+    background: #111827;
+    border-right: 1px solid #1f2937;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+}
+sidebar h2 {
+    font-size: 20px;
+    margin: 0 0 24px 0;
+    background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 800;
+}
+.slice-btn {
+    padding: 12px 16px;
+    border-radius: 12px;
+    cursor: pointer;
+    margin-bottom: 8px;
+    transition: all 0.2s;
+    background: transparent;
+    border: none;
+    color: #9ca3af;
+    text-align: left;
+    font-size: 16px;
+    width: 100%;
+}
+.slice-btn:hover, .slice-btn.active {
+    background: rgba(0, 242, 254, 0.1);
+    color: #00f2fe;
+}
+content {
+    flex: 1;
+    padding: 40px;
+    overflow-y: auto;
+}
+.card {
+    background: rgba(17, 24, 39, 0.7);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 24px;
+    padding: 32px;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 24px;
+}
+th, td {
+    padding: 16px;
+    text-align: left;
+    border-bottom: 1px solid #1f2937;
+}
+th {
+    color: #9ca3af;
+    font-weight: 600;
+}
+.btn {
+    background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+    border: none;
+    color: white;
+    padding: 10px 20px;
+    border-radius: 12px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: transform 0.2s;
+}
+.btn:hover {
+    transform: scale(1.03);
+}
+.btn-danger {
+    background: linear-gradient(135deg, #f87171 0%, #ef4444 100%);
+}
+.modal {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.6);
+    justify-content: center; align-items: center;
+    backdrop-filter: blur(5px);
+}
+.modal-content {
+    background: #111827;
+    border: 1px solid #1f2937;
+    padding: 32px;
+    border-radius: 24px;
+    width: 400px;
+}
+.input-group {
+    margin-bottom: 16px;
+}
+.input-group label {
+    display: block; margin-bottom: 8px; color: #9ca3af;
+}
+.input-group input {
+    width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #1f2937; background: #1f2937; color: white; box-sizing: border-box;
+}
+</style>
+</head>
+<body>
+<sidebar>
+    <h2>Hexagen Admin</h2>
+    <div id="slice-list"></div>
+</sidebar>
+<content>
+    <div class="card" id="main-card">
+        <h1 id="slice-title">Welcome to Admin Portal</h1>
+        <p>Select a slice from the sidebar to manage database records.</p>
+    </div>
+</content>
+
+<div class="modal" id="add-modal">
+    <div class="modal-content">
+        <h3 style="margin-top:0;">Add New Record</h3>
+        <form id="add-form"></form>
+        <div style="display:flex; justify-content: flex-end; gap: 12px; margin-top: 24px;">
+            <button class="btn btn-danger" onclick="closeModal()">Cancel</button>
+            <button class="btn" onclick="submitRecord()">Save</button>
+        </div>
+    </div>
+</div>
+
+<script>
+)HTML";
+
+    ss << "const slices = {\n";
+    for (const auto& slice : program->slices) {
+        ss << "    \"" << slice->name << "\": [\n";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            ss << "        { \"name\": \"" << slice->fields[i]->name << "\", \"type\": \"" << dataTypeToString(slice->fields[i]->type) << "\" }";
+            if (i + 1 < slice->fields.size()) ss << ",";
+            ss << "\n";
+        }
+        ss << "    ],\n";
+    }
+    ss << "};\n";
+
+    ss << R"HTML(
+let activeSlice = '';
+
+function renderSidebar() {
+    const list = document.getElementById('slice-list');
+    list.innerHTML = '';
+    Object.keys(slices).forEach(s => {
+        const btn = document.createElement('button');
+        btn.className = 'slice-btn';
+        btn.innerText = s;
+        btn.onclick = () => selectSlice(s);
+        list.appendChild(btn);
+    });
+}
+
+async function selectSlice(name) {
+    activeSlice = name;
+    document.querySelectorAll('.slice-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.innerText === name);
+    });
+    
+    const fields = slices[name];
+    const card = document.getElementById('main-card');
+    card.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h1 style="margin:0;">${name}</h1>
+            <button class="btn" onclick="openAddModal()">Add Record</button>
+        </div>
+        <div style="overflow-x:auto;">
+            <table>
+                <thead>
+                    <tr>
+                        ${fields.map(f => `<th>${f.name}</th>`).join('')}
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="table-body"></tbody>
+            </table>
+        </div>
+    `;
+    loadTableData();
+}
+
+async function loadTableData() {
+    const res = await fetch('/api/admin/' + activeSlice);
+    const data = await res.json();
+    const tbody = document.getElementById('table-body');
+    tbody.innerHTML = '';
+    data.forEach(row => {
+        const tr = document.createElement('tr');
+        const fields = slices[activeSlice];
+        tr.innerHTML = fields.map(f => `<td>${row[f.name]}</td>`).join('') + 
+            `<td><button class="btn btn-danger" onclick="deleteRecord('${row[fields[0].name]}')">Delete</button></td>`;
+        tbody.appendChild(tr);
+    });
+}
+
+function openAddModal() {
+    const form = document.getElementById('add-form');
+    form.innerHTML = '';
+    slices[activeSlice].forEach(f => {
+        form.innerHTML += `
+            <div class="input-group">
+                <label>${f.name} (${f.type})</label>
+                <input type="${f.type === 'int' || f.type === 'float' ? 'number' : 'text'}" name="${f.name}" required>
+            </div>
+        `;
+    });
+    document.getElementById('add-modal').style.display = 'flex';
+}
+
+function closeModal() {
+    document.getElementById('add-modal').style.display = 'none';
+}
+
+async function submitRecord() {
+    const form = document.getElementById('add-form');
+    const data = {};
+    slices[activeSlice].forEach(f => {
+        const val = form.elements[f.name].value;
+        data[f.name] = f.type === 'int' ? parseInt(val) : f.type === 'float' ? parseFloat(val) : val;
+    });
+    await fetch('/api/admin/' + activeSlice, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+    });
+    closeModal();
+    loadTableData();
+}
+
+async function deleteRecord(id) {
+    if(!confirm('Are you sure you want to delete this record?')) return;
+    const fields = slices[activeSlice];
+    const payload = {};
+    payload[fields[0].name] = id;
+    await fetch('/api/admin/' + activeSlice, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    loadTableData();
+}
+
+renderSidebar();
+</script>
+</body>
+</html>
+)HTML";
+
+    return ss.str();
+}
+
