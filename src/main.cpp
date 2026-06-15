@@ -41,7 +41,7 @@ std::string readInputSource(const std::string& filepath) {
     if (fs::is_directory(filepath)) {
         std::stringstream ss;
         std::vector<fs::path> paths;
-        for (const auto& entry : fs::directory_iterator(filepath)) {
+        for (const auto& entry : fs::recursive_directory_iterator(filepath)) {
             if (entry.is_regular_file() && entry.path().extension() == ".hx") {
                 paths.push_back(entry.path());
             }
@@ -64,7 +64,7 @@ uint64_t getInputState(const std::string& filepath) {
     if (fs::is_directory(filepath)) {
         uint64_t total = 0;
         size_t count = 0;
-        for (const auto& entry : fs::directory_iterator(filepath)) {
+        for (const auto& entry : fs::recursive_directory_iterator(filepath)) {
             if (entry.is_regular_file() && entry.path().extension() == ".hx") {
                 auto mt = fs::last_write_time(entry.path());
                 total += std::chrono::duration_cast<std::chrono::milliseconds>(mt.time_since_epoch()).count();
