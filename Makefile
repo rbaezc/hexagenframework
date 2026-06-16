@@ -32,4 +32,9 @@ cli:
 clean:
 	rm -rf $(BUILD_DIR) $(TARGET_CORE) $(TARGET_CLI)
 
-.PHONY: all clean cli
+install: all
+	install -d /usr/local/bin
+	install -m 0755 $(TARGET_CLI) /usr/local/bin/$(TARGET_CLI)
+	install -m 0755 $(TARGET_CORE) /usr/local/bin/$(TARGET_CORE)
+
+.PHONY: all clean cli install
