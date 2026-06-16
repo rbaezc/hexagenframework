@@ -12,6 +12,8 @@
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <map>
+#include <regex>
 
 namespace fs = std::filesystem;
 
@@ -37,8 +39,674 @@ std::string readFile(const std::string& filepath) {
     return buffer.str();
 }
 
+std::string trim(const std::string& str) {
+    size_t first = str.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    size_t last = str.find_last_not_of(" \t\r\n");
+    return str.substr(first, (last - first + 1));
+}
+
+struct ComponentData {
+    std::string name;
+    std::vector<std::string> props;
+    std::string htmlContent;
+};
+
+void extractComponents(std::string& source, std::map<std::string, ComponentData>& componentsMap) {
+    size_t pos = 0;
+    while ((pos = source.find("component ", pos)) != std::string::npos) {
+        if (pos > 0 && (std::isalnum(source[pos - 1]) || source[pos - 1] == '_')) {
+            pos += 10;
+            continue;
+        }
+
+        size_t nameStart = pos + 10;
+        while (nameStart < source.length() && std::isspace(source[nameStart])) {
+            nameStart++;
+        }
+        if (nameStart >= source.length()) break;
+
+        size_t nameEnd = source.find_first_of(" \t\r\n{", nameStart);
+        if (nameEnd == std::string::npos) {
+            pos += 10;
+            continue;
+        }
+
+        std::string compName = source.substr(nameStart, nameEnd - nameStart);
+
+        size_t bracePos = source.find('{', nameEnd);
+        if (bracePos == std::string::npos) {
+            pos += 10;
+            continue;
+        }
+
+        int braceCount = 1;
+        size_t blockEnd = std::string::npos;
+        bool inQuotes = false;
+        char quoteChar = 0;
+
+        for (size_t i = bracePos + 1; i < source.length(); ++i) {
+            char c = source[i];
+            if (inQuotes) {
+                if (c == quoteChar && source[i-1] != '\\') {
+                    inQuotes = false;
+                }
+            } else {
+                if (c == '"' || c == '\'') {
+                    inQuotes = true;
+                    quoteChar = c;
+                } else if (c == '{') {
+                    braceCount++;
+                } else if (c == '}') {
+                    braceCount--;
+                    if (braceCount == 0) {
+                        blockEnd = i;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (blockEnd == std::string::npos) {
+            throw std::runtime_error("Error: Unclosed component block for '" + compName + "'");
+        }
+
+        std::string compBody = source.substr(bracePos + 1, blockEnd - bracePos - 1);
+
+        std::vector<std::string> props;
+        std::string htmlContent = "";
+
+        size_t bodyPos = 0;
+        while (bodyPos < compBody.length()) {
+            while (bodyPos < compBody.length() && std::isspace(compBody[bodyPos])) {
+                bodyPos++;
+            }
+            if (bodyPos >= compBody.length()) break;
+
+            if (compBody.compare(bodyPos, 5, "input") == 0 && std::isspace(compBody[bodyPos + 5])) {
+                bodyPos += 6;
+                while (bodyPos < compBody.length() && std::isspace(compBody[bodyPos])) bodyPos++;
+                size_t idStart = bodyPos;
+                while (bodyPos < compBody.length() && (std::isalnum(compBody[bodyPos]) || compBody[bodyPos] == '_')) {
+                    bodyPos++;
+                }
+                std::string propName = compBody.substr(idStart, bodyPos - idStart);
+                if (!propName.empty()) {
+                    props.push_back(propName);
+                }
+                while (bodyPos < compBody.length() && compBody[bodyPos] != '\n' && compBody[bodyPos] != ';') {
+                    bodyPos++;
+                }
+            } else if (compBody.compare(bodyPos, 4, "html") == 0 && (std::isspace(compBody[bodyPos + 4]) || compBody[bodyPos + 4] == '"')) {
+                bodyPos += 4;
+                while (bodyPos < compBody.length() && std::isspace(compBody[bodyPos])) bodyPos++;
+                if (bodyPos < compBody.length() && compBody[bodyPos] == '"') {
+                    size_t htmlStart = bodyPos + 1;
+                    size_t htmlEnd = std::string::npos;
+                    bool escaped = false;
+                    for (size_t i = htmlStart; i < compBody.length(); ++i) {
+                        if (compBody[i] == '\\' && !escaped) {
+                            escaped = true;
+                        } else {
+                            if (compBody[i] == '"' && !escaped) {
+                                htmlEnd = i;
+                                break;
+                            }
+                            escaped = false;
+                        }
+                    }
+                    if (htmlEnd != std::string::npos) {
+                        htmlContent = compBody.substr(htmlStart, htmlEnd - htmlStart);
+                        bodyPos = htmlEnd + 1;
+                    } else {
+                        bodyPos = htmlStart;
+                    }
+                } else {
+                    bodyPos++;
+                }
+            } else {
+                bodyPos++;
+            }
+        }
+
+        ComponentData data = {compName, props, htmlContent};
+        componentsMap[compName] = data;
+
+        source.erase(pos, blockEnd - pos + 1);
+    }
+
+    // Recursively resolve components inside other components (composition)
+    bool nestedChanged = true;
+    int iterations = 0;
+    while (nestedChanged && iterations < 10) {
+        nestedChanged = false;
+        iterations++;
+        for (auto& [compName, compData] : componentsMap) {
+            for (const auto& [otherCompName, otherCompData] : componentsMap) {
+                if (compName == otherCompName) continue;
+                std::string searchTag = "<" + otherCompName;
+                size_t tagPos = 0;
+                while ((tagPos = compData.htmlContent.find(searchTag, tagPos)) != std::string::npos) {
+                    char nextChar = compData.htmlContent[tagPos + searchTag.length()];
+                    if (!std::isspace(nextChar) && nextChar != '/' && nextChar != '>') {
+                        tagPos++;
+                        continue;
+                    }
+
+                    size_t endTagPos = std::string::npos;
+                    bool inDoubleQuotes = false;
+                    bool inSingleQuotes = false;
+                    for (size_t i = tagPos + searchTag.length(); i < compData.htmlContent.length(); ++i) {
+                        char c = compData.htmlContent[i];
+                        if (c == '"' && compData.htmlContent[i-1] != '\\') inDoubleQuotes = !inDoubleQuotes;
+                        else if (c == '\'' && compData.htmlContent[i-1] != '\\') inSingleQuotes = !inSingleQuotes;
+                        else if (!inDoubleQuotes && !inSingleQuotes) {
+                            if (c == '>') {
+                                endTagPos = i;
+                                break;
+                            }
+                        }
+                    }
+                    if (endTagPos == std::string::npos) {
+                        tagPos++;
+                        continue;
+                    }
+
+                    std::string fullTag = compData.htmlContent.substr(tagPos, endTagPos - tagPos + 1);
+                    bool isSelfClosing = (fullTag.length() >= 2 && fullTag[fullTag.length() - 2] == '/');
+
+                    std::map<std::string, std::string> attrValues;
+                    std::string attrsStr = fullTag.substr(searchTag.length(), endTagPos - tagPos - searchTag.length() - (isSelfClosing ? 1 : 0));
+
+                    size_t attrPos = 0;
+                    while (attrPos < attrsStr.length()) {
+                        while (attrPos < attrsStr.length() && std::isspace(attrsStr[attrPos])) attrPos++;
+                        if (attrPos >= attrsStr.length()) break;
+                        size_t keyStart = attrPos;
+                        while (attrPos < attrsStr.length() && (std::isalnum(attrsStr[attrPos]) || attrsStr[attrPos] == '_' || attrsStr[attrPos] == '-')) attrPos++;
+                        std::string key = attrsStr.substr(keyStart, attrPos - keyStart);
+                        while (attrPos < attrsStr.length() && std::isspace(attrsStr[attrPos])) attrPos++;
+                        if (attrPos < attrsStr.length() && attrsStr[attrPos] == '=') {
+                            attrPos++;
+                            while (attrPos < attrsStr.length() && std::isspace(attrsStr[attrPos])) attrPos++;
+                            if (attrPos < attrsStr.length() && (attrsStr[attrPos] == '"' || attrsStr[attrPos] == '\'')) {
+                                char quote = attrsStr[attrPos];
+                                attrPos++;
+                                size_t valStart = attrPos;
+                                while (attrPos < attrsStr.length() && attrsStr[attrPos] != quote) attrPos++;
+                                std::string val = attrsStr.substr(valStart, attrPos - valStart);
+                                if (attrPos < attrsStr.length()) attrPos++;
+                                attrValues[key] = val;
+                            } else {
+                                size_t valStart = attrPos;
+                                while (attrPos < attrsStr.length() && !std::isspace(attrsStr[attrPos])) attrPos++;
+                                attrValues[key] = attrsStr.substr(valStart, attrPos - valStart);
+                            }
+                        }
+                    }
+
+                    std::string replacement = otherCompData.htmlContent;
+                    for (const auto& prop : otherCompData.props) {
+                        std::string val = "";
+                        if (attrValues.find(prop) != attrValues.end()) val = attrValues[prop];
+                        std::string placeholder = "{{" + prop + "}}";
+                        size_t subPos = 0;
+                        while ((subPos = replacement.find(placeholder, subPos)) != std::string::npos) {
+                            replacement.replace(subPos, placeholder.length(), val);
+                            subPos += val.length();
+                        }
+                    }
+
+                    size_t totalReplaceLen = fullTag.length();
+                    if (!isSelfClosing) {
+                        std::string closingTag = "</" + otherCompName + ">";
+                        size_t closeTagPos = compData.htmlContent.find(closingTag, endTagPos + 1);
+                        if (closeTagPos != std::string::npos) {
+                            totalReplaceLen = (closeTagPos + closingTag.length()) - tagPos;
+                        }
+                    }
+
+                    compData.htmlContent.replace(tagPos, totalReplaceLen, replacement);
+                    nestedChanged = true;
+                }
+            }
+        }
+    }
+}
+
+std::string resolveComponents(const std::string& source, const std::map<std::string, ComponentData>& componentsMap) {
+    std::string result = source;
+    size_t vPos = 0;
+    while ((vPos = result.find("view ", vPos)) != std::string::npos) {
+        if (vPos > 0 && (std::isalnum(result[vPos - 1]) || result[vPos - 1] == '_')) {
+            vPos += 5;
+            continue;
+        }
+
+        size_t nameStart = vPos + 5;
+        while (nameStart < result.length() && std::isspace(result[nameStart])) nameStart++;
+        if (nameStart >= result.length()) break;
+
+        size_t nameEnd = result.find_first_of(" \t\r\n{", nameStart);
+        if (nameEnd == std::string::npos) {
+            vPos += 5;
+            continue;
+        }
+
+        std::string viewName = result.substr(nameStart, nameEnd - nameStart);
+
+        size_t bracePos = result.find('{', nameEnd);
+        if (bracePos == std::string::npos) {
+            vPos += 5;
+            continue;
+        }
+
+        int braceCount = 1;
+        size_t blockEnd = std::string::npos;
+        bool inQuotes = false;
+        char quoteChar = 0;
+
+        for (size_t i = bracePos + 1; i < result.length(); ++i) {
+            char c = result[i];
+            if (inQuotes) {
+                if (c == quoteChar && result[i-1] != '\\') inQuotes = false;
+            } else {
+                if (c == '"' || c == '\'') {
+                    inQuotes = true;
+                    quoteChar = c;
+                } else if (c == '{') braceCount++;
+                else if (c == '}') {
+                    braceCount--;
+                    if (braceCount == 0) {
+                        blockEnd = i;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (blockEnd == std::string::npos) {
+            vPos++;
+            continue;
+        }
+
+        std::string viewBody = result.substr(bracePos + 1, blockEnd - bracePos - 1);
+
+        std::vector<std::string> declaredComponents;
+        size_t compDeclPos = std::string::npos;
+        size_t compDeclLength = 0;
+
+        std::vector<std::string> keywords = {"components", "standalone"};
+        for (const auto& kw : keywords) {
+            size_t kwPos = viewBody.find(kw);
+            if (kwPos != std::string::npos) {
+                size_t openBracket = viewBody.find('[', kwPos);
+                size_t closeBracket = viewBody.find(']', kwPos);
+                if (openBracket != std::string::npos && closeBracket != std::string::npos && openBracket < closeBracket) {
+                    std::string listStr = viewBody.substr(openBracket + 1, closeBracket - openBracket - 1);
+                    std::stringstream ss(listStr);
+                    std::string item;
+                    while (std::getline(ss, item, ',')) {
+                        item = trim(item);
+                        if (!item.empty()) {
+                            declaredComponents.push_back(item);
+                        }
+                    }
+                    compDeclPos = kwPos;
+                    compDeclLength = (closeBracket + 1) - kwPos;
+                    break;
+                }
+            }
+        }
+
+        if (compDeclPos != std::string::npos) {
+            viewBody.erase(compDeclPos, compDeclLength);
+        }
+
+        size_t htmlPos = 0;
+        while ((htmlPos = viewBody.find("html ", htmlPos)) != std::string::npos) {
+            htmlPos += 4;
+            while (htmlPos < viewBody.length() && std::isspace(viewBody[htmlPos])) htmlPos++;
+            if (htmlPos < viewBody.length() && viewBody[htmlPos] == '"') {
+                size_t htmlStart = htmlPos + 1;
+                size_t htmlEnd = std::string::npos;
+                bool escaped = false;
+                for (size_t i = htmlStart; i < viewBody.length(); ++i) {
+                    if (viewBody[i] == '\\' && !escaped) {
+                        escaped = true;
+                    } else {
+                        if (viewBody[i] == '"' && !escaped) {
+                            htmlEnd = i;
+                            break;
+                        }
+                        escaped = false;
+                    }
+                }
+
+                if (htmlEnd != std::string::npos) {
+                    std::string htmlContent = viewBody.substr(htmlStart, htmlEnd - htmlStart);
+                    bool changed = false;
+
+                    for (const auto& [compName, compData] : componentsMap) {
+                        std::string searchTag = "<" + compName;
+                        size_t tagPos = 0;
+                        while ((tagPos = htmlContent.find(searchTag, tagPos)) != std::string::npos) {
+                            char nextChar = htmlContent[tagPos + searchTag.length()];
+                            if (!std::isspace(nextChar) && nextChar != '/' && nextChar != '>') {
+                                tagPos++;
+                                continue;
+                            }
+
+                            bool isDeclared = false;
+                            for (const auto& dc : declaredComponents) {
+                                if (dc == compName) {
+                                    isDeclared = true;
+                                    break;
+                                }
+                            }
+                            if (!isDeclared) {
+                                std::cerr << "Warning: Component '" << compName << "' used in view '" << viewName 
+                                          << "' but not declared in components/standalone list!" << std::endl;
+                            }
+
+                            size_t endTagPos = std::string::npos;
+                            bool inDoubleQuotes = false;
+                            bool inSingleQuotes = false;
+                            for (size_t i = tagPos + searchTag.length(); i < htmlContent.length(); ++i) {
+                                char c = htmlContent[i];
+                                if (c == '"' && htmlContent[i-1] != '\\') inDoubleQuotes = !inDoubleQuotes;
+                                else if (c == '\'' && htmlContent[i-1] != '\\') inSingleQuotes = !inSingleQuotes;
+                                else if (!inDoubleQuotes && !inSingleQuotes) {
+                                    if (c == '>') {
+                                        endTagPos = i;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (endTagPos == std::string::npos) {
+                                tagPos++;
+                                continue;
+                            }
+
+                            std::string fullTag = htmlContent.substr(tagPos, endTagPos - tagPos + 1);
+                            bool isSelfClosing = (fullTag.length() >= 2 && fullTag[fullTag.length() - 2] == '/');
+
+                            std::map<std::string, std::string> attrValues;
+                            std::string attrsStr = fullTag.substr(searchTag.length(), endTagPos - tagPos - searchTag.length() - (isSelfClosing ? 1 : 0));
+
+                            size_t attrPos = 0;
+                            while (attrPos < attrsStr.length()) {
+                                while (attrPos < attrsStr.length() && std::isspace(attrsStr[attrPos])) attrPos++;
+                                if (attrPos >= attrsStr.length()) break;
+                                size_t keyStart = attrPos;
+                                while (attrPos < attrsStr.length() && (std::isalnum(attrsStr[attrPos]) || attrsStr[attrPos] == '_' || attrsStr[attrPos] == '-')) attrPos++;
+                                std::string key = attrsStr.substr(keyStart, attrPos - keyStart);
+                                while (attrPos < attrsStr.length() && std::isspace(attrsStr[attrPos])) attrPos++;
+                                if (attrPos < attrsStr.length() && attrsStr[attrPos] == '=') {
+                                    attrPos++;
+                                    while (attrPos < attrsStr.length() && std::isspace(attrsStr[attrPos])) attrPos++;
+                                    if (attrPos < attrsStr.length() && (attrsStr[attrPos] == '"' || attrsStr[attrPos] == '\'')) {
+                                        char quote = attrsStr[attrPos];
+                                        attrPos++;
+                                        size_t valStart = attrPos;
+                                        while (attrPos < attrsStr.length() && attrsStr[attrPos] != quote) attrPos++;
+                                        std::string val = attrsStr.substr(valStart, attrPos - valStart);
+                                        if (attrPos < attrsStr.length()) attrPos++;
+                                        attrValues[key] = val;
+                                    } else {
+                                        size_t valStart = attrPos;
+                                        while (attrPos < attrsStr.length() && !std::isspace(attrsStr[attrPos])) attrPos++;
+                                        attrValues[key] = attrsStr.substr(valStart, attrPos - valStart);
+                                    }
+                                }
+                            }
+
+                            std::string replacement = compData.htmlContent;
+                            for (const auto& prop : compData.props) {
+                                std::string val = "";
+                                if (attrValues.find(prop) != attrValues.end()) val = attrValues[prop];
+                                std::string placeholder = "{{" + prop + "}}";
+                                size_t subPos = 0;
+                                while ((subPos = replacement.find(placeholder, subPos)) != std::string::npos) {
+                                    replacement.replace(subPos, placeholder.length(), val);
+                                    subPos += val.length();
+                                }
+                            }
+
+                            size_t totalReplaceLen = fullTag.length();
+                            if (!isSelfClosing) {
+                                std::string closingTag = "</" + compName + ">";
+                                size_t closeTagPos = htmlContent.find(closingTag, endTagPos + 1);
+                                if (closeTagPos != std::string::npos) {
+                                    totalReplaceLen = (closeTagPos + closingTag.length()) - tagPos;
+                                }
+                            }
+
+                            htmlContent.replace(tagPos, totalReplaceLen, replacement);
+                            changed = true;
+                            tagPos += replacement.length();
+                        }
+                    }
+
+                    if (changed) {
+                        viewBody.replace(htmlStart, htmlEnd - htmlStart, htmlContent);
+                    }
+                    htmlPos = htmlEnd + 1;
+                } else {
+                    htmlPos = htmlStart;
+                }
+            } else {
+                htmlPos++;
+            }
+        }
+
+        result.replace(bracePos + 1, blockEnd - bracePos - 1, viewBody);
+        vPos = bracePos + 1 + viewBody.length() + 1;
+    }
+
+    return result;
+}
+
+std::string preprocessIncludes(const std::string& source, const fs::path& baseDir, int depth = 0) {
+    if (depth > 10) {
+        throw std::runtime_error("Exceeded maximum include depth (10). Check for circular dependencies.");
+    }
+    
+    std::string result = source;
+    size_t pos = 0;
+    while ((pos = result.find("include(", pos)) != std::string::npos) {
+        size_t startPos = pos;
+        pos += 8; // skip "include("
+        
+        int parenCount = 1;
+        size_t endPos = std::string::npos;
+        bool inDoubleQuotes = false;
+        bool inSingleQuotes = false;
+        
+        for (size_t i = pos; i < result.length(); ++i) {
+            char c = result[i];
+            if (c == '"' && (i == 0 || result[i-1] != '\\')) {
+                inDoubleQuotes = !inDoubleQuotes;
+            } else if (c == '\'' && (i == 0 || result[i-1] != '\\')) {
+                inSingleQuotes = !inSingleQuotes;
+            } else if (!inDoubleQuotes && !inSingleQuotes) {
+                if (c == '(') parenCount++;
+                else if (c == ')') {
+                    parenCount--;
+                    if (parenCount == 0) {
+                        endPos = i;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (endPos == std::string::npos) {
+            pos++;
+            continue;
+        }
+        
+        std::string argsStr = result.substr(pos, endPos - pos);
+        
+        std::vector<std::string> args;
+        std::string currentArg = "";
+        inDoubleQuotes = false;
+        inSingleQuotes = false;
+        
+        for (size_t i = 0; i < argsStr.length(); ++i) {
+            char c = argsStr[i];
+            if (c == '"' && (i == 0 || argsStr[i-1] != '\\')) {
+                inDoubleQuotes = !inDoubleQuotes;
+            } else if (c == '\'' && (i == 0 || argsStr[i-1] != '\\')) {
+                inSingleQuotes = !inSingleQuotes;
+            }
+            
+            if (c == ',' && !inDoubleQuotes && !inSingleQuotes) {
+                args.push_back(trim(currentArg));
+                currentArg = "";
+            } else {
+                currentArg += c;
+            }
+        }
+        args.push_back(trim(currentArg));
+        
+        if (args.empty() || args[0].empty()) {
+            pos = endPos + 1;
+            continue;
+        }
+        
+        std::string filename = args[0];
+        if (filename.front() == '"' && filename.back() == '"') {
+            filename = filename.substr(1, filename.length() - 2);
+        } else if (filename.front() == '\'' && filename.back() == '\'') {
+            filename = filename.substr(1, filename.length() - 2);
+        }
+        
+        std::map<std::string, std::string> params;
+        for (size_t i = 1; i < args.size(); ++i) {
+            std::string param = args[i];
+            size_t eqPos = param.find('=');
+            if (eqPos != std::string::npos) {
+                std::string key = trim(param.substr(0, eqPos));
+                std::string val = trim(param.substr(eqPos + 1));
+                if (val.front() == '"' && val.back() == '"') {
+                    val = val.substr(1, val.length() - 2);
+                } else if (val.front() == '\'' && val.back() == '\'') {
+                    val = val.substr(1, val.length() - 2);
+                }
+                params[key] = val;
+            }
+        }
+        
+        fs::path includePath = baseDir / filename;
+        if (!fs::exists(includePath)) {
+            includePath = fs::path(filename);
+        }
+        
+        std::string replacement = "";
+        if (fs::exists(includePath)) {
+            std::ifstream file(includePath);
+            if (file.is_open()) {
+                std::stringstream buffer;
+                buffer << file.rdbuf();
+                replacement = buffer.str();
+            } else {
+                std::cerr << "Warning: Could not open include file: " << includePath << std::endl;
+            }
+        } else {
+            std::cerr << "Warning: Include file not found: " << filename << " (resolved: " << includePath << ")" << std::endl;
+        }
+        
+        for (const auto& [key, val] : params) {
+            std::string placeholder = "{{" + key + "}}";
+            size_t subPos = 0;
+            while ((subPos = replacement.find(placeholder, subPos)) != std::string::npos) {
+                replacement.replace(subPos, placeholder.length(), val);
+                subPos += val.length();
+            }
+        }
+        
+        replacement = preprocessIncludes(replacement, includePath.parent_path(), depth + 1);
+        
+        size_t includeLength = (endPos + 1) - startPos;
+        result.replace(startPos, includeLength, replacement);
+        
+        pos = startPos + replacement.length();
+    }
+    
+    return result;
+}
+
+std::string preprocessLayouts(const std::string& source, const fs::path& baseDir) {
+    std::string result = source;
+    static const std::regex layoutRegex(R"(layout\(\s*\\?[\"\']([^\'\"]+)\\?[\"\']\s*\))");
+    std::smatch match;
+    
+    while (std::regex_search(result, match, layoutRegex)) {
+        size_t startPos = match.position();
+        size_t contentStartPos = startPos + match.length();
+        std::string layoutFile = match[1].str();
+        
+        size_t closingQuotePos = std::string::npos;
+        bool escaped = false;
+        for (size_t i = contentStartPos; i < result.length(); ++i) {
+            if (result[i] == '\\' && !escaped) {
+                escaped = true;
+            } else {
+                if (result[i] == '"' && !escaped) {
+                    closingQuotePos = i;
+                    break;
+                }
+                escaped = false;
+            }
+        }
+        
+        if (closingQuotePos == std::string::npos) {
+            break;
+        }
+        
+        std::string pageContent = result.substr(contentStartPos, closingQuotePos - contentStartPos);
+        
+        fs::path layoutPath = baseDir / layoutFile;
+        if (!fs::exists(layoutPath)) {
+            layoutPath = fs::path(layoutFile);
+        }
+        
+        std::string layoutContent = "";
+        if (fs::exists(layoutPath)) {
+            std::ifstream file(layoutPath);
+            if (file.is_open()) {
+                std::stringstream buffer;
+                buffer << file.rdbuf();
+                layoutContent = buffer.str();
+            } else {
+                std::cerr << "Warning: Could not open layout file: " << layoutPath << std::endl;
+            }
+        } else {
+            std::cerr << "Warning: Layout file not found: " << layoutFile << " (resolved: " << layoutPath << ")" << std::endl;
+        }
+        
+        std::string placeholder = "{{CONTENT}}";
+        size_t subPos = 0;
+        while ((subPos = layoutContent.find(placeholder, subPos)) != std::string::npos) {
+            layoutContent.replace(subPos, placeholder.length(), pageContent);
+            subPos += pageContent.length();
+        }
+        
+        size_t layoutAndContentLength = closingQuotePos - startPos;
+        result.replace(startPos, layoutAndContentLength, layoutContent);
+    }
+    
+    return result;
+}
+
 std::string readInputSource(const std::string& filepath) {
+    std::string rawSource = "";
+    fs::path baseDir;
+    
     if (fs::is_directory(filepath)) {
+        baseDir = fs::path(filepath);
         std::stringstream ss;
         std::vector<fs::path> paths;
         for (const auto& entry : fs::recursive_directory_iterator(filepath)) {
@@ -54,9 +722,17 @@ std::string readInputSource(const std::string& filepath) {
                 ss << file.rdbuf() << "\n";
             }
         }
-        return ss.str();
+        rawSource = ss.str();
+    } else {
+        baseDir = fs::path(filepath).parent_path();
+        rawSource = readFile(filepath);
     }
-    return readFile(filepath);
+    
+    std::map<std::string, ComponentData> componentsMap;
+    extractComponents(rawSource, componentsMap);
+    std::string withLayouts = preprocessLayouts(rawSource, baseDir);
+    std::string withIncludes = preprocessIncludes(withLayouts, baseDir);
+    return resolveComponents(withIncludes, componentsMap);
 }
 
 uint64_t getInputState(const std::string& filepath) {

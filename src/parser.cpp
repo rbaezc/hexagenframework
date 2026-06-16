@@ -1,4 +1,6 @@
 #include "parser.hpp"
+#include <algorithm>
+#include <cctype>
 
 std::shared_ptr<ASTProgram> Parser::parse() {
     auto program = std::make_shared<ASTProgram>();
@@ -18,6 +20,24 @@ std::shared_ptr<ASTProgram> Parser::parse() {
             throw std::runtime_error("Unexpected token '" + tok.value + "' at root level, line " + std::to_string(tok.line));
         }
     }
+
+    if (program->views.size() > 1) {
+        int targetIdx = -1;
+        for (size_t i = 0; i < program->views.size(); ++i) {
+            std::string nameLower = program->views[i]->name;
+            std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
+            if (nameLower == "home" || nameLower == "index") {
+                targetIdx = i;
+                break;
+            }
+        }
+        if (targetIdx > 0) {
+            auto targetView = program->views[targetIdx];
+            program->views.erase(program->views.begin() + targetIdx);
+            program->views.insert(program->views.begin(), targetView);
+        }
+    }
+
     return program;
 }
 
