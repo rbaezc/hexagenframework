@@ -52,6 +52,35 @@ struct ComponentData {
     std::string htmlContent;
 };
 
+std::string resolveConditions(std::string html, const std::map<std::string, std::string>& attrValues) {
+    std::regex condRegex(R"(\{\{\s*if\s+(\w+)\s*(==|!=)\s*['\"]([^'\"]*)['\"]\s*\}\}([\s\S]*?)\{\{\s*endif\s*\}\})");
+    std::smatch match;
+    std::string result = html;
+    
+    while (std::regex_search(result, match, condRegex)) {
+        std::string propName = match[1].str();
+        std::string op = match[2].str();
+        std::string targetVal = match[3].str();
+        std::string innerHtml = match[4].str();
+        
+        std::string actualVal = "";
+        if (attrValues.find(propName) != attrValues.end()) {
+            actualVal = attrValues.at(propName);
+        }
+        
+        bool conditionMet = false;
+        if (op == "==") {
+            conditionMet = (actualVal == targetVal);
+        } else {
+            conditionMet = (actualVal != targetVal);
+        }
+        
+        std::string replacement = conditionMet ? innerHtml : "";
+        result.replace(match.position(), match.length(), replacement);
+    }
+    return result;
+}
+
 void extractComponents(std::string& source, std::map<std::string, ComponentData>& componentsMap) {
     size_t pos = 0;
     while ((pos = source.find("component ", pos)) != std::string::npos) {
@@ -257,6 +286,8 @@ void extractComponents(std::string& source, std::map<std::string, ComponentData>
                         }
                     }
 
+                    replacement = resolveConditions(replacement, attrValues);
+
                     size_t totalReplaceLen = fullTag.length();
                     if (!isSelfClosing) {
                         std::string closingTag = "</" + otherCompName + ">";
@@ -456,7 +487,7 @@ std::string resolveComponents(const std::string& source, const std::map<std::str
                                         attrValues[key] = val;
                                     } else {
                                         size_t valStart = attrPos;
-                                        while (attrPos < attrsStr.length() && !std::isspace(attrsStr[attrPos])) attrPos++;
+                                        while (attrPos < attrsStr.length() && !std::isspace(attrPos)) attrPos++;
                                         attrValues[key] = attrsStr.substr(valStart, attrPos - valStart);
                                     }
                                 }
@@ -473,6 +504,8 @@ std::string resolveComponents(const std::string& source, const std::map<std::str
                                     subPos += val.length();
                                 }
                             }
+
+                            replacement = resolveConditions(replacement, attrValues);
 
                             size_t totalReplaceLen = fullTag.length();
                             if (!isSelfClosing) {
