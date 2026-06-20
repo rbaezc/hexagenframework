@@ -2088,6 +2088,26 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "    return \"\";\n"
        << "}\n\n";
 
+    // Split a flat JSON array string "[{..},{..}]" into top-level object strings,
+    // respecting quotes/escapes. Used by association preloading.
+    ss << "std::vector<std::string> __splitJsonObjects(const std::string& arr) {\n"
+       << "    std::vector<std::string> out;\n"
+       << "    int depth = 0; bool inStr = false; bool esc = false; size_t start = std::string::npos;\n"
+       << "    for (size_t i = 0; i < arr.size(); ++i) {\n"
+       << "        char c = arr[i];\n"
+       << "        if (inStr) {\n"
+       << "            if (esc) esc = false;\n"
+       << "            else if (c == '\\\\') esc = true;\n"
+       << "            else if (c == '\"') inStr = false;\n"
+       << "            continue;\n"
+       << "        }\n"
+       << "        if (c == '\"') { inStr = true; continue; }\n"
+       << "        if (c == '{') { if (depth == 0) start = i; depth++; }\n"
+       << "        else if (c == '}') { depth--; if (depth == 0 && start != std::string::npos) { out.push_back(arr.substr(start, i - start + 1)); start = std::string::npos; } }\n"
+       << "    }\n"
+       << "    return out;\n"
+       << "}\n\n";
+
     // Basic email format validator used by changeset format(field, email) rules.
     ss << "bool isValidEmail(const std::string& s) {\n"
        << "    size_t at = s.find('@');\n"
@@ -2875,6 +2895,54 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << generateSlice(slice) << "\n";
     }
 
+    // -------------------------------------------------------------
+    // Association preloading (anti N+1). Emitted AFTER all slice
+    // classes so cross-slice static calls resolve. For each slice
+    // with relation() fields, applyPreloads_<Slice> embeds related
+    // records (loaded once) when the request carries ?_preload=field.
+    // Backend-agnostic: operates on each slice's getAllAsJSON output.
+    // -------------------------------------------------------------
+    ss << "// Association preloading helpers\n";
+    for (const auto& slice : program->slices) {
+        bool hasRel = false;
+        for (const auto& f : slice->fields) if (f->type == DataType::RELATION && !f->relatedSlice.empty()) hasRel = true;
+        if (!hasRel) continue;
+
+        ss << "std::string applyPreloads_" << slice->name << "(const std::string& arr, const std::string& req) {\n";
+        ss << "    std::string pre = getQueryParam(req, \"_preload\");\n";
+        ss << "    if (pre.empty()) return arr;\n";
+        ss << "    std::string preKey = \",\" + pre + \",\";\n";
+        ss << "    std::vector<std::string> objs = __splitJsonObjects(arr);\n";
+        for (const auto& f : slice->fields) {
+            if (f->type != DataType::RELATION || f->relatedSlice.empty()) continue;
+            // Determine the related slice's key field: prefer a field named "id".
+            std::string keyField = "id";
+            for (const auto& rs : program->slices) {
+                if (rs->name == f->relatedSlice) {
+                    bool hasId = false;
+                    for (const auto& rf : rs->fields) if (rf->name == "id") hasId = true;
+                    if (!hasId && !rs->fields.empty()) keyField = rs->fields[0]->name;
+                }
+            }
+            ss << "    if (preKey.find(\"," << f->name << ",\") != std::string::npos) {\n";
+            ss << "        std::map<std::string, std::string> rel;\n";
+            ss << "        std::vector<std::string> robjs = __splitJsonObjects(" << f->relatedSlice << "::getAllAsJSON(\"\"));\n";
+            ss << "        for (auto& ro : robjs) rel[getJSONVal(ro, \"" << keyField << "\")] = ro;\n";
+            ss << "        for (auto& o : objs) {\n";
+            ss << "            std::string fk = getJSONVal(o, \"" << f->name << "\");\n";
+            ss << "            std::string emb = rel.count(fk) ? rel[fk] : std::string(\"null\");\n";
+            ss << "            size_t lb = o.rfind('}');\n";
+            ss << "            if (lb != std::string::npos) o = o.substr(0, lb) + \",\\\"" << f->name << "_data\\\":\" + emb + \"}\";\n";
+            ss << "        }\n";
+            ss << "    }\n";
+        }
+        ss << "    std::string result = \"[\";\n";
+        ss << "    for (size_t i = 0; i < objs.size(); ++i) { if (i) result += \",\"; result += objs[i]; }\n";
+        ss << "    result += \"]\";\n";
+        ss << "    return result;\n";
+        ss << "}\n\n";
+    }
+
     for (const auto& job : program->jobs) {
         ss << generateJob(job) << "\n";
     }
@@ -3264,7 +3332,14 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             } else {
                 ss << "            else if (req.find(\"GET /api/" << slice->name << "\") != std::string::npos) {\n";
             }
-            ss << "                std::string json = " << slice->name << "::getAllAsJSON(req);\n";
+            {
+                bool _hasRel = false;
+                for (const auto& f : slice->fields) if (f->type == DataType::RELATION && !f->relatedSlice.empty()) _hasRel = true;
+                if (_hasRel)
+                    ss << "                std::string json = applyPreloads_" << slice->name << "(" << slice->name << "::getAllAsJSON(req), req);\n";
+                else
+                    ss << "                std::string json = " << slice->name << "::getAllAsJSON(req);\n";
+            }
             ss << "                std::stringstream resp;\n";
             ss << "                resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
             ss << "                     << \"Content-Type: application/json\\r\\n\"\n";
