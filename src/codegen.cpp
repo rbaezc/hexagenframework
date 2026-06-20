@@ -372,7 +372,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "            }\n";
         ss << "            sqlite3_finalize(stmt);\n";
         ss << "        }\n";
-        ss << "        sqlite3_close(db);\n";
+        ss << "        releaseSQLiteConn(db);\n";
     } else if (dbType == "postgres" || dbType == "postgresql") {
         ss << "        PGconn* conn = getPGConn();\n";
         ss << "        if (!conn) {\n";
@@ -403,7 +403,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "            std::cerr << \"[PostgreSQL] Insert failed: \" << PQerrorMessage(conn) << std::endl;\n";
         ss << "        }\n";
         ss << "        PQclear(res);\n";
-        ss << "        PQfinish(conn);\n";
+        ss << "        releasePGConn(conn);\n";
     } else if (dbType == "mysql") {
         ss << "        MYSQL* conn = getMySQLConn();\n";
         ss << "        if (!conn) {\n";
@@ -448,7 +448,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "                mysql_stmt_close(stmt);\n";
         ss << "            }\n";
         ss << "        }\n";
-        ss << "        mysql_close(conn);\n";
+        ss << "        releaseMySQLConn(conn);\n";
     } else {
         ss << "        saveJSONL();\n";
     }
@@ -533,7 +533,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "            sqlite3_finalize(stmt);\n";
         ss << "        }\n";
         ss << "        ss << \"]\";\n";
-        ss << "        sqlite3_close(db);\n";
+        ss << "        releaseSQLiteConn(db);\n";
         ss << "        return ss.str();\n";
     } else if (dbType == "postgres" || dbType == "postgresql") {
         ss << "        PGconn* conn = getPGConn();\n";
@@ -578,7 +578,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "        PGresult* res = PQexecParams(conn, query.c_str(), c_params.size(), NULL, c_params.empty() ? NULL : c_params.data(), NULL, NULL, 0);\n";
         ss << "        if (PQresultStatus(res) != PGRES_TUPLES_OK) {\n";
         ss << "            PQclear(res);\n";
-        ss << "            PQfinish(conn);\n";
+        ss << "            releasePGConn(conn);\n";
         ss << "            return getAllAsJSON_JSONL(req);\n";
         ss << "        }\n";
         ss << "        int rows = PQntuples(res);\n";
@@ -613,7 +613,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "        }\n";
         ss << "        ss << \"]\";\n";
         ss << "        PQclear(res);\n";
-        ss << "        PQfinish(conn);\n";
+        ss << "        releasePGConn(conn);\n";
         ss << "        return ss.str();\n";
     } else if (dbType == "mysql") {
         ss << "        MYSQL* conn = getMySQLConn();\n";
@@ -694,7 +694,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "            }\n";
         ss << "        }\n";
         ss << "        ss << \"]\";\n";
-        ss << "        mysql_close(conn);\n";
+        ss << "        releaseMySQLConn(conn);\n";
         ss << "        return ss.str();\n";
     } else {
         ss << "        return getAllAsJSON_JSONL(req);\n";
@@ -715,7 +715,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "            sqlite3_step(stmt);\n";
         ss << "            sqlite3_finalize(stmt);\n";
         ss << "        }\n";
-        ss << "        sqlite3_close(db);\n";
+        ss << "        releaseSQLiteConn(db);\n";
     } else if (dbType == "postgres" || dbType == "postgresql") {
         ss << "        PGconn* conn = getPGConn();\n";
         ss << "        if (!conn) {\n";
@@ -727,7 +727,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "        std::string query = \"DELETE FROM \\\"" << slice->name << "\\\" WHERE \\\"\" + key + \"\\\" = $1;\";\n";
         ss << "        PGresult* res = PQexecParams(conn, query.c_str(), 1, NULL, paramValues, NULL, NULL, 0);\n";
         ss << "        PQclear(res);\n";
-        ss << "        PQfinish(conn);\n";
+        ss << "        releasePGConn(conn);\n";
     } else if (dbType == "mysql") {
         ss << "        MYSQL* conn = getMySQLConn();\n";
         ss << "        if (!conn) {\n";
@@ -748,7 +748,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "                mysql_stmt_close(stmt);\n";
         ss << "            }\n";
         ss << "        }\n";
-        ss << "        mysql_close(conn);\n";
+        ss << "        releaseMySQLConn(conn);\n";
     } else {
         ss << "        deleteRecord_JSONL(key, value);\n";
     }
@@ -818,7 +818,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
                     ss << "            }\n";
                     ss << "            sqlite3_finalize(stmt);\n";
                     ss << "        }\n";
-                    ss << "        sqlite3_close(db);\n";
+                    ss << "        releaseSQLiteConn(db);\n";
                     ss << "        return found;\n";
                 } else if (dbType == "postgres" || dbType == "postgresql") {
                     ss << "        PGconn* conn = getPGConn();\n";
@@ -850,7 +850,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
                     ss << "            found = true;\n";
                     ss << "        }\n";
                     ss << "        PQclear(res);\n";
-                    ss << "        PQfinish(conn);\n";
+                    ss << "        releasePGConn(conn);\n";
                     ss << "        return found;\n";
                 } else if (dbType == "mysql") {
                     ss << "        MYSQL* conn = getMySQLConn();\n";
@@ -890,7 +890,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
                     ss << "                mysql_free_result(result);\n";
                     ss << "            }\n";
                     ss << "        }\n";
-                    ss << "        mysql_close(conn);\n";
+                    ss << "        releaseMySQLConn(conn);\n";
                     ss << "        return found;\n";
                 } else {
                     ss << "        return findUser_JSONL(emailVal, user);\n";
@@ -2764,8 +2764,45 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         << "}\n\n";
 
         // Generate database connections helpers
+    // Generic thread-safe connection pool reused across concurrent requests,
+    // avoiding a fresh connect/disconnect per query under load. Pool size is
+    // configurable via DB_POOL_SIZE (default 8).
+    if (program->dbType == "sqlite" || program->dbType == "postgres" ||
+        program->dbType == "postgresql" || program->dbType == "mysql") {
+        ss << "template <typename T>\n"
+           << "class ConnPool {\n"
+           << "public:\n"
+           << "    void init(std::function<T()> f, int maxSz) { factory_ = f; maxSize_ = (maxSz > 0 ? maxSz : 1); }\n"
+           << "    T acquire() {\n"
+           << "        std::unique_lock<std::mutex> lk(mtx_);\n"
+           << "        if (!idle_.empty()) { T c = idle_.front(); idle_.pop(); return c; }\n"
+           << "        if (created_ < maxSize_) {\n"
+           << "            created_++;\n"
+           << "            lk.unlock();\n"
+           << "            T c = factory_();\n"
+           << "            if (!c) { std::lock_guard<std::mutex> g(mtx_); created_--; }\n"
+           << "            return c;\n"
+           << "        }\n"
+           << "        cv_.wait(lk, [&]{ return !idle_.empty(); });\n"
+           << "        T c = idle_.front(); idle_.pop(); return c;\n"
+           << "    }\n"
+           << "    void release(T c) {\n"
+           << "        if (!c) return;\n"
+           << "        std::lock_guard<std::mutex> lk(mtx_);\n"
+           << "        idle_.push(c);\n"
+           << "        cv_.notify_one();\n"
+           << "    }\n"
+           << "private:\n"
+           << "    std::queue<T> idle_;\n"
+           << "    std::mutex mtx_;\n"
+           << "    std::condition_variable cv_;\n"
+           << "    std::function<T()> factory_;\n"
+           << "    int maxSize_ = 8;\n"
+           << "    int created_ = 0;\n"
+           << "};\n\n";
+    }
     if (program->dbType == "sqlite") {
-        ss << "sqlite3* getSQLiteConn() {\n"
+        ss << "sqlite3* createSQLiteConn() {\n"
            << "    std::string dbName = getEnvOr(\"DB_NAME\", \"vortex_db.db\");\n"
            << "    sqlite3* db = nullptr;\n"
            << "    int rc = sqlite3_open(dbName.c_str(), &db);\n"
@@ -2775,9 +2812,15 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
            << "        return nullptr;\n"
            << "    }\n"
            << "    return db;\n"
-           << "}\n\n";
+           << "}\n\n"
+           << "ConnPool<sqlite3*>& sqlitePool() {\n"
+           << "    static ConnPool<sqlite3*>* p = []{ auto* x = new ConnPool<sqlite3*>(); x->init(createSQLiteConn, std::atoi(getEnvOr(\"DB_POOL_SIZE\", \"8\"))); return x; }();\n"
+           << "    return *p;\n"
+           << "}\n"
+           << "sqlite3* getSQLiteConn() { return sqlitePool().acquire(); }\n"
+           << "void releaseSQLiteConn(sqlite3* c) { sqlitePool().release(c); }\n\n";
     } else if (program->dbType == "postgres" || program->dbType == "postgresql") {
-        ss << "PGconn* getPGConn() {\n"
+        ss << "PGconn* createPGConn() {\n"
            << "    if (!std::getenv(\"DB_HOST\") && !std::getenv(\"DB_USER\")) return nullptr;\n"
            << "    std::string conninfo = \"host=\" + std::string(getEnvOr(\"DB_HOST\", \"localhost\")) +\n"
            << "                           \" port=\" + std::string(getEnvOr(\"DB_PORT\", \"5432\")) +\n"
@@ -2791,9 +2834,15 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
            << "        return nullptr;\n"
            << "    }\n"
            << "    return conn;\n"
-           << "}\n\n";
+           << "}\n\n"
+           << "ConnPool<PGconn*>& pgPool() {\n"
+           << "    static ConnPool<PGconn*>* p = []{ auto* x = new ConnPool<PGconn*>(); x->init(createPGConn, std::atoi(getEnvOr(\"DB_POOL_SIZE\", \"8\"))); return x; }();\n"
+           << "    return *p;\n"
+           << "}\n"
+           << "PGconn* getPGConn() { return pgPool().acquire(); }\n"
+           << "void releasePGConn(PGconn* c) { pgPool().release(c); }\n\n";
     } else if (program->dbType == "mysql") {
-        ss << "MYSQL* getMySQLConn() {\n"
+        ss << "MYSQL* createMySQLConn() {\n"
            << "    if (!std::getenv(\"DB_HOST\") && !std::getenv(\"DB_USER\")) return nullptr;\n"
            << "    MYSQL* conn = mysql_init(nullptr);\n"
            << "    if (!conn) {\n"
@@ -2812,7 +2861,13 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
            << "        return nullptr;\n"
            << "    }\n"
            << "    return conn;\n"
-           << "}\n\n";
+           << "}\n\n"
+           << "ConnPool<MYSQL*>& mysqlPool() {\n"
+           << "    static ConnPool<MYSQL*>* p = []{ auto* x = new ConnPool<MYSQL*>(); x->init(createMySQLConn, std::atoi(getEnvOr(\"DB_POOL_SIZE\", \"8\"))); return x; }();\n"
+           << "    return *p;\n"
+           << "}\n"
+           << "MYSQL* getMySQLConn() { return mysqlPool().acquire(); }\n"
+           << "void releaseMySQLConn(MYSQL* c) { mysqlPool().release(c); }\n\n";
     }
 
     // initDatabase()
@@ -2838,7 +2893,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                << "            sqlite3_exec(db, q.c_str(), nullptr, nullptr, &errMsg);\n"
                << "        }\n";
         }
-        ss << "        sqlite3_close(db);\n"
+        ss << "        releaseSQLiteConn(db);\n"
            << "    }\n";
     } else if (dbType == "postgres" || dbType == "postgresql") {
         ss << "    PGconn* conn = getPGConn();\n"
@@ -2859,7 +2914,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                << "            PQclear(res);\n"
                << "        }\n";
         }
-        ss << "        PQfinish(conn);\n"
+        ss << "        releasePGConn(conn);\n"
            << "    }\n";
     } else if (dbType == "mysql") {
         ss << "    MYSQL* conn = getMySQLConn();\n"
@@ -2879,7 +2934,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                << "            mysql_query(conn, q.c_str());\n"
                << "        }\n";
         }
-        ss << "        mysql_close(conn);\n"
+        ss << "        releaseMySQLConn(conn);\n"
            << "    }\n";
     } else {
         ss << "    // No init needed for JSONL\n";
