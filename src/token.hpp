@@ -55,6 +55,7 @@ enum class TokenType {
     ENQUEUE,
     USE,
     CPP,
+    VALIDATE,
 
     // Types
     TYPE_INT,
@@ -120,6 +121,7 @@ inline std::string tokenTypeToString(TokenType type) {
         case TokenType::ENQUEUE: return "enqueue";
         case TokenType::USE: return "use";
         case TokenType::CPP: return "cpp";
+        case TokenType::VALIDATE: return "validate";
         case TokenType::TYPE_INT: return "int";
         case TokenType::TYPE_STRING: return "string";
         case TokenType::TYPE_FLOAT: return "float";

@@ -56,9 +56,11 @@ std::shared_ptr<ASTSlice> Parser::parseSlice() {
             slice->fields.push_back(parseField());
         } else if (check(TokenType::ACTION)) {
             slice->actions.push_back(parseAction());
+        } else if (check(TokenType::VALIDATE)) {
+            parseValidateBlock(slice);
         } else {
             const auto& tok = peek();
-            throw std::runtime_error("Expected 'field' or 'action' in slice definition, got: '" + tok.value + "' at line " + std::to_string(tok.line));
+            throw std::runtime_error("Expected 'field', 'action' or 'validate' in slice definition, got: '" + tok.value + "' at line " + std::to_string(tok.line));
         }
     }
 
@@ -114,6 +116,35 @@ std::shared_ptr<ASTAction> Parser::parseAction() {
 
     consume(TokenType::RBRACE, "Expected '}' to close action body");
     return action;
+}
+
+void Parser::parseValidateBlock(std::shared_ptr<ASTSlice> slice) {
+    consume(TokenType::VALIDATE, "Expected 'validate'");
+    consume(TokenType::LBRACE, "Expected '{' to start validate block");
+
+    while (!check(TokenType::RBRACE) && !check(TokenType::END_OF_FILE)) {
+        const auto& ruleTok = peek();
+        consume(TokenType::IDENTIFIER, "Expected validation rule name (e.g. required, length, format, min, max)");
+        std::string rule = ruleTok.value;
+
+        consume(TokenType::LPAREN, "Expected '(' after validation rule name");
+        std::vector<std::string> args;
+        while (!check(TokenType::RPAREN) && !check(TokenType::END_OF_FILE)) {
+            const auto& argTok = peek();
+            if (check(TokenType::IDENTIFIER) || check(TokenType::INT_LITERAL) || check(TokenType::STRING_LITERAL)) {
+                args.push_back(argTok.value);
+                advance();
+            } else {
+                throw std::runtime_error("Unexpected token '" + argTok.value + "' in validation arguments at line " + std::to_string(argTok.line));
+            }
+            if (!match(TokenType::COMMA)) break;
+        }
+        consume(TokenType::RPAREN, "Expected ')' to close validation rule");
+
+        slice->validations.push_back(std::make_shared<ASTValidation>(rule, args));
+    }
+
+    consume(TokenType::RBRACE, "Expected '}' to close validate block");
 }
 
 std::shared_ptr<ASTStatement> Parser::parseStatement() {

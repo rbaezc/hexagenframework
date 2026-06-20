@@ -169,8 +169,55 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     for (const auto& field : slice->fields) {
         ss << generateField(field);
     }
-    
+
     ss << "\n";
+
+    // -------------------------------------------------------------
+    // Changeset validation: collects ALL errors (field -> message)
+    // before any write, Ecto-style. Empty map => valid.
+    // -------------------------------------------------------------
+    {
+        auto fieldType = [&](const std::string& fname) -> DataType {
+            for (const auto& f : slice->fields) if (f->name == fname) return f->type;
+            return DataType::UNKNOWN;
+        };
+        ss << "    std::map<std::string, std::string> validateChangeset() {\n";
+        ss << "        std::map<std::string, std::string> errors;\n";
+        for (const auto& v : slice->validations) {
+            if (v->args.empty()) continue;
+            const std::string& fld = v->args[0];
+            DataType ft = fieldType(fld);
+            if (ft == DataType::UNKNOWN) continue; // unknown field, skip safely
+            if (v->rule == "required") {
+                if (ft == DataType::STRING) {
+                    ss << "        if (" << fld << ".empty()) errors[\"" << fld << "\"] = \"is required\";\n";
+                }
+            } else if (v->rule == "length" && v->args.size() >= 3) {
+                if (ft == DataType::STRING) {
+                    ss << "        if (errors.find(\"" << fld << "\") == errors.end() && (" << fld << ".size() < " << v->args[1]
+                       << " || " << fld << ".size() > " << v->args[2] << ")) errors[\"" << fld
+                       << "\"] = \"must be between " << v->args[1] << " and " << v->args[2] << " characters\";\n";
+                }
+            } else if (v->rule == "format" && v->args.size() >= 2) {
+                if (ft == DataType::STRING && (v->args[1] == "email")) {
+                    ss << "        if (errors.find(\"" << fld << "\") == errors.end() && !isValidEmail(" << fld
+                       << ")) errors[\"" << fld << "\"] = \"has invalid format\";\n";
+                }
+            } else if (v->rule == "min" && v->args.size() >= 2) {
+                if (ft == DataType::INT || ft == DataType::FLOAT || ft == DataType::RELATION) {
+                    ss << "        if (" << fld << " < " << v->args[1] << ") errors[\"" << fld
+                       << "\"] = \"must be at least " << v->args[1] << "\";\n";
+                }
+            } else if (v->rule == "max" && v->args.size() >= 2) {
+                if (ft == DataType::INT || ft == DataType::FLOAT || ft == DataType::RELATION) {
+                    ss << "        if (" << fld << " > " << v->args[1] << ") errors[\"" << fld
+                       << "\"] = \"must be at most " << v->args[1] << "\";\n";
+                }
+            }
+        }
+        ss << "        return errors;\n";
+        ss << "    }\n\n";
+    }
 
     std::string dbType = program->dbType;
 
@@ -2041,6 +2088,17 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "    return \"\";\n"
        << "}\n\n";
 
+    // Basic email format validator used by changeset format(field, email) rules.
+    ss << "bool isValidEmail(const std::string& s) {\n"
+       << "    size_t at = s.find('@');\n"
+       << "    if (at == std::string::npos || at == 0) return false;\n"
+       << "    size_t dot = s.find('.', at);\n"
+       << "    if (dot == std::string::npos || dot == at + 1) return false;\n"
+       << "    if (dot + 1 >= s.size()) return false;\n"
+       << "    if (s.find(' ') != std::string::npos) return false;\n"
+       << "    return true;\n"
+       << "}\n\n";
+
     // Dynamic route matcher: compares the request's "METHOD /target" line against a
     // route pattern that may contain :params (e.g. /api/leads/:id), filling the
     // captured params map. Query string is ignored. Returns false on method or
@@ -3463,6 +3521,23 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                                 }
                             }
                         }
+                        // Changeset validation: reject with 422 + all errors before writing.
+                        ss << "                {\n";
+                        ss << "                    auto _cs = instance.validateChangeset();\n";
+                        ss << "                    if (!_cs.empty()) {\n";
+                        ss << "                        std::stringstream ej;\n";
+                        ss << "                        ej << \"{\\\"status\\\":\\\"error\\\",\\\"errors\\\":{\";\n";
+                        ss << "                        bool _ef = true;\n";
+                        ss << "                        for (auto& kv : _cs) { if (!_ef) ej << \",\"; _ef = false; ej << \"\\\"\" << kv.first << \"\\\":\\\"\" << kv.second << \"\\\"\"; }\n";
+                        ss << "                        ej << \"}}\";\n";
+                        ss << "                        std::string msg = ej.str();\n";
+                        ss << "                        std::stringstream resp;\n";
+                        ss << "                        resp << \"HTTP/1.1 422 Unprocessable Entity\\r\\n\" << \"Content-Type: application/json\\r\\n\" << \"Access-Control-Allow-Origin: *\\r\\n\" << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\" << msg;\n";
+                        ss << "                        send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+                        ss << "                        close(client_fd);\n";
+                        ss << "                        co_return;\n";
+                        ss << "                    }\n";
+                        ss << "                }\n";
                         ss << "                instance.save();\n";
                         ss << "                instance." << actionName << "();\n";
                         ss << "                broadcast_ws_message(\"{\\\"event\\\": \\\"action\\\", \\\"target\\\": \\\"" << sliceName << "." << actionName << "\\\"}\");\n";

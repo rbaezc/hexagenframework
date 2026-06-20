@@ -216,11 +216,30 @@ public:
     }
 };
 
+// Changeset validation rule, e.g. required(email), length(password, 8, 64).
+class ASTValidation : public ASTNode {
+public:
+    std::string rule;                  // "required", "length", "format", "min", "max"
+    std::vector<std::string> args;     // first arg is the field name
+
+    ASTValidation(std::string rule, std::vector<std::string> args)
+        : rule(rule), args(args) {}
+
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "Validation: " << rule << "(";
+        for (size_t i = 0; i < args.size(); ++i) {
+            std::cout << args[i] << (i + 1 < args.size() ? ", " : "");
+        }
+        std::cout << ")\n";
+    }
+};
+
 class ASTSlice : public ASTNode {
 public:
     std::string name;
     std::vector<std::shared_ptr<ASTField>> fields;
     std::vector<std::shared_ptr<ASTAction>> actions;
+    std::vector<std::shared_ptr<ASTValidation>> validations;
 
     ASTSlice(std::string name) : name(name) {}
     void print(int indent = 0) const override {
@@ -232,6 +251,12 @@ public:
         std::cout << std::string(indent + 2, ' ') << "Actions:\n";
         for (const auto& action : actions) {
             action->print(indent + 4);
+        }
+        if (!validations.empty()) {
+            std::cout << std::string(indent + 2, ' ') << "Validations:\n";
+            for (const auto& v : validations) {
+                v->print(indent + 4);
+            }
         }
     }
 };

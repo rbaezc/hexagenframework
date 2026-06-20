@@ -44,6 +44,7 @@ private:
     std::shared_ptr<ASTSlice> parseSlice();
     std::shared_ptr<ASTField> parseField();
     std::shared_ptr<ASTAction> parseAction();
+    void parseValidateBlock(std::shared_ptr<ASTSlice> slice);
     std::shared_ptr<ASTStatement> parseStatement();
     
     // View and API Parsing
