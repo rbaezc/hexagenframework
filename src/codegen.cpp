@@ -1294,7 +1294,13 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
        << "        liveSocket.onmessage = function(event) {\n"
        << "            try {\n"
        << "                const msg = JSON.parse(event.data);\n"
-       << "                if (msg.event === 'action') {\n"
+       << "                if (msg.type === 'patch' && Array.isArray(msg.patches)) {\n"
+       << "                    // LiveView DOM patching: apply minimal server-computed diffs\n"
+       << "                    msg.patches.forEach(p => {\n"
+       << "                        const el = document.querySelector('[hg-id=\"' + p.id + '\"]');\n"
+       << "                        if (el && el.innerHTML !== p.html) el.innerHTML = p.html;\n"
+       << "                    });\n"
+       << "                } else if (msg.event === 'action') {\n"
        << "                    refreshTables();\n"
        << "                } else if (msg.event === 'input_change') {\n"
        << "                    const input = document.getElementById('input-' + msg.field);\n"
@@ -2842,6 +2848,83 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "        }\n"
        << "    }\n"
        << "}\n\n"
+       // ---- PubSub: topic-based channels over WebSocket ----
+       << "std::map<std::string, std::set<int>> ws_topics;\n"
+       << "std::mutex ws_topics_mutex;\n\n"
+       << "void subscribe_topic(const std::string& topic, int fd) {\n"
+       << "    std::lock_guard<std::mutex> lk(ws_topics_mutex);\n"
+       << "    ws_topics[topic].insert(fd);\n"
+       << "}\n\n"
+       << "void unsubscribe_all_topics(int fd) {\n"
+       << "    std::lock_guard<std::mutex> lk(ws_topics_mutex);\n"
+       << "    for (auto& kv : ws_topics) kv.second.erase(fd);\n"
+       << "}\n\n"
+       << "int publish_topic(const std::string& topic, const std::string& message) {\n"
+       << "    std::vector<int> targets;\n"
+       << "    { std::lock_guard<std::mutex> lk(ws_topics_mutex);\n"
+       << "      auto it = ws_topics.find(topic);\n"
+       << "      if (it != ws_topics.end()) targets.assign(it->second.begin(), it->second.end()); }\n"
+       << "    int sent = 0;\n"
+       << "    for (int fd : targets) { sendWebSocketFrame(fd, message); sent++; }\n"
+       << "    return sent;\n"
+       << "}\n\n"
+       // ---- Server-side DOM diffing (region-based, minimal patches) ----
+       // Live regions are delimited in templates by <!--hg:NAME--> ... <!--/hg:NAME-->.
+       // Only regions whose inner content changed are emitted as patches.
+       << "std::map<std::string, std::string> extractLiveRegions(const std::string& html) {\n"
+       << "    std::map<std::string, std::string> regions;\n"
+       << "    size_t pos = 0;\n"
+       << "    const std::string open = \"<!--hg:\";\n"
+       << "    while ((pos = html.find(open, pos)) != std::string::npos) {\n"
+       << "        size_t nameStart = pos + open.size();\n"
+       << "        size_t nameEnd = html.find(\"-->\", nameStart);\n"
+       << "        if (nameEnd == std::string::npos) break;\n"
+       << "        std::string name = html.substr(nameStart, nameEnd - nameStart);\n"
+       << "        size_t contentStart = nameEnd + 3;\n"
+       << "        std::string close = \"<!--/hg:\" + name + \"-->\";\n"
+       << "        size_t contentEnd = html.find(close, contentStart);\n"
+       << "        if (contentEnd == std::string::npos) { pos = contentStart; continue; }\n"
+       << "        regions[name] = html.substr(contentStart, contentEnd - contentStart);\n"
+       << "        pos = contentEnd + close.size();\n"
+       << "    }\n"
+       << "    return regions;\n"
+       << "}\n\n"
+       << "std::string jsonEscape(const std::string& s) {\n"
+       << "    std::string o; o.reserve(s.size() + 8);\n"
+       << "    for (char c : s) {\n"
+       << "        switch (c) {\n"
+       << "            case '\"': o += \"\\\\\\\"\"; break;\n"
+       << "            case '\\\\': o += \"\\\\\\\\\"; break;\n"
+       << "            case '\\n': o += \"\\\\n\"; break;\n"
+       << "            case '\\r': o += \"\\\\r\"; break;\n"
+       << "            case '\\t': o += \"\\\\t\"; break;\n"
+       << "            default: o += c;\n"
+       << "        }\n"
+       << "    }\n"
+       << "    return o;\n"
+       << "}\n\n"
+       << "std::string computeDomPatches(const std::string& oldHtml, const std::string& newHtml) {\n"
+       << "    auto oldR = extractLiveRegions(oldHtml);\n"
+       << "    auto newR = extractLiveRegions(newHtml);\n"
+       << "    std::stringstream js;\n"
+       << "    js << \"{\\\"type\\\":\\\"patch\\\",\\\"patches\\\":[\";\n"
+       << "    bool first = true;\n"
+       << "    for (auto& kv : newR) {\n"
+       << "        auto oit = oldR.find(kv.first);\n"
+       << "        if (oit == oldR.end() || oit->second != kv.second) {\n"
+       << "            if (!first) js << \",\";\n"
+       << "            first = false;\n"
+       << "            js << \"{\\\"id\\\":\\\"\" << jsonEscape(kv.first) << \"\\\",\\\"html\\\":\\\"\" << jsonEscape(kv.second) << \"\\\"}\";\n"
+       << "        }\n"
+       << "    }\n"
+       << "    js << \"]}\";\n"
+       << "    return js.str();\n"
+       << "}\n\n"
+       << "int publish_dom_patch(const std::string& oldHtml, const std::string& newHtml) {\n"
+       << "    std::string patch = computeDomPatches(oldHtml, newHtml);\n"
+       << "    broadcast_ws_message(patch);\n"
+       << "    return (int)patch.size();\n"
+       << "}\n\n"
        << "bool readWebSocketFrame(int client_fd, std::string& out_message) {\n"
        << "    unsigned char header[2];\n"
        << "    int n = recv(client_fd, header, 2, 0);\n"
@@ -3350,10 +3433,19 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "                            std::string msg;\n";
         ss << "                            while (readWebSocketFrame(client_fd, msg)) {\n";
         ss << "                                if (!msg.empty()) {\n";
-        ss << "                                    std::cout << \"[LiveView WS] Received: \" << msg << std::endl;\n";
-        ss << "                                    broadcast_ws_message(msg, client_fd);\n";
+        ss << "                                    std::string _act = getJSONVal(msg, \"action\");\n";
+        ss << "                                    if (_act == \"subscribe\") {\n";
+        ss << "                                        subscribe_topic(getJSONVal(msg, \"topic\"), client_fd);\n";
+        ss << "                                        sendWebSocketFrame(client_fd, std::string(\"{\\\"type\\\":\\\"subscribed\\\",\\\"topic\\\":\\\"\") + getJSONVal(msg, \"topic\") + \"\\\"}\");\n";
+        ss << "                                    } else if (_act == \"publish\") {\n";
+        ss << "                                        publish_topic(getJSONVal(msg, \"topic\"), msg);\n";
+        ss << "                                    } else {\n";
+        ss << "                                        std::cout << \"[LiveView WS] Received: \" << msg << std::endl;\n";
+        ss << "                                        broadcast_ws_message(msg, client_fd);\n";
+        ss << "                                    }\n";
         ss << "                                }\n";
         ss << "                            }\n";
+        ss << "                            unsubscribe_all_topics(client_fd);\n";
         ss << "                            unregister_ws_client(client_fd);\n";
         ss << "                        }).detach();\n";
         ss << "                    }\n";
