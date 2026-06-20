@@ -394,6 +394,7 @@ public:
     std::string frontend = "vanilla"; // Default frontend type
     std::string css = "vanilla";       // Default CSS type
     std::string target = "web";        // Default target (web or desktop)
+    bool useHttp = false;              // Enable outbound HTTP(S) client (links OpenSSL)
     std::vector<std::shared_ptr<ASTSlice>> slices;
     std::vector<std::shared_ptr<ASTView>> views;
     std::vector<std::shared_ptr<ASTApi>> apis;

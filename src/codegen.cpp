@@ -1952,6 +1952,11 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     ss << "#include <cstdlib>\n";
     ss << "#include <ctime>\n";
     ss << "#include <atomic>\n";
+    if (program->useHttp) {
+        ss << "#include <netdb.h>\n";
+        ss << "#include <openssl/ssl.h>\n";
+        ss << "#include <openssl/err.h>\n";
+    }
     ss << "#include <arpa/inet.h>\n";
     ss << "#include <condition_variable>\n";
     ss << "#include <coroutine>\n";
@@ -2272,6 +2277,87 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "    }\n"
        << "    return out;\n"
        << "}\n\n";
+
+    // Outbound HTTP(S) client (enabled via `config { http: true }`). Lets actions
+    // call external REST APIs/SDKs (Stripe, PayPal, Gemini, ...). HTTPS via OpenSSL.
+    if (program->useHttp) {
+        ss << "struct HttpResponse { long status = 0; std::string body; std::string error; };\n\n"
+           << "HttpResponse http_request(const std::string& method, const std::string& url,\n"
+           << "                          const std::vector<std::string>& headers = {},\n"
+           << "                          const std::string& reqBody = \"\") {\n"
+           << "    HttpResponse resp;\n"
+           << "    bool https = false; std::string u = url;\n"
+           << "    if (u.rfind(\"https://\", 0) == 0) { https = true; u = u.substr(8); }\n"
+           << "    else if (u.rfind(\"http://\", 0) == 0) { u = u.substr(7); }\n"
+           << "    std::string host, path = \"/\", portStr = https ? \"443\" : \"80\";\n"
+           << "    size_t slash = u.find('/');\n"
+           << "    std::string hostport = (slash == std::string::npos) ? u : u.substr(0, slash);\n"
+           << "    if (slash != std::string::npos) path = u.substr(slash);\n"
+           << "    size_t colon = hostport.find(':');\n"
+           << "    if (colon != std::string::npos) { host = hostport.substr(0, colon); portStr = hostport.substr(colon + 1); }\n"
+           << "    else host = hostport;\n"
+           << "    struct addrinfo hints; std::memset(&hints, 0, sizeof(hints));\n"
+           << "    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;\n"
+           << "    struct addrinfo* res = nullptr;\n"
+           << "    if (getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res) != 0 || !res) { resp.error = \"dns failed\"; return resp; }\n"
+           << "    int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);\n"
+           << "    if (sock < 0) { freeaddrinfo(res); resp.error = \"socket failed\"; return resp; }\n"
+           << "    if (connect(sock, res->ai_addr, res->ai_addrlen) < 0) { close(sock); freeaddrinfo(res); resp.error = \"connect failed\"; return resp; }\n"
+           << "    freeaddrinfo(res);\n"
+           << "    std::string req = method + \" \" + path + \" HTTP/1.1\\r\\n\";\n"
+           << "    req += \"Host: \" + host + \"\\r\\n\";\n"
+           << "    req += \"User-Agent: Hexagen/1.0\\r\\n\";\n"
+           << "    req += \"Connection: close\\r\\n\";\n"
+           << "    bool hasCT = false;\n"
+           << "    for (const auto& h : headers) { req += h + \"\\r\\n\"; std::string lh = h; for (char& c : lh) c = (char)tolower(c); if (lh.rfind(\"content-type\", 0) == 0) hasCT = true; }\n"
+           << "    if (!reqBody.empty()) { req += \"Content-Length: \" + std::to_string(reqBody.size()) + \"\\r\\n\"; if (!hasCT) req += \"Content-Type: application/json\\r\\n\"; }\n"
+           << "    req += \"\\r\\n\" + reqBody;\n"
+           << "    std::string raw;\n"
+           << "    if (https) {\n"
+           << "        static std::once_flag sslInit;\n"
+           << "        std::call_once(sslInit, []() { SSL_library_init(); SSL_load_error_strings(); });\n"
+           << "        SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());\n"
+           << "        if (!ctx) { close(sock); resp.error = \"ssl ctx\"; return resp; }\n"
+           << "        SSL* ssl = SSL_new(ctx);\n"
+           << "        SSL_set_tlsext_host_name(ssl, host.c_str());\n"
+           << "        SSL_set_fd(ssl, sock);\n"
+           << "        if (SSL_connect(ssl) != 1) { SSL_free(ssl); SSL_CTX_free(ctx); close(sock); resp.error = \"tls handshake failed\"; return resp; }\n"
+           << "        SSL_write(ssl, req.data(), (int)req.size());\n"
+           << "        char buf[4096]; int n;\n"
+           << "        while ((n = SSL_read(ssl, buf, sizeof(buf))) > 0) raw.append(buf, n);\n"
+           << "        SSL_shutdown(ssl); SSL_free(ssl); SSL_CTX_free(ctx);\n"
+           << "    } else {\n"
+           << "        send(sock, req.data(), req.size(), 0);\n"
+           << "        char buf[4096]; ssize_t n;\n"
+           << "        while ((n = recv(sock, buf, sizeof(buf), 0)) > 0) raw.append(buf, n);\n"
+           << "    }\n"
+           << "    close(sock);\n"
+           << "    size_t lineEnd = raw.find(\"\\r\\n\");\n"
+           << "    if (lineEnd != std::string::npos) {\n"
+           << "        std::string statusLine = raw.substr(0, lineEnd);\n"
+           << "        size_t sp = statusLine.find(' ');\n"
+           << "        if (sp != std::string::npos) resp.status = atol(statusLine.substr(sp + 1).c_str());\n"
+           << "    }\n"
+           << "    size_t hdrEnd = raw.find(\"\\r\\n\\r\\n\");\n"
+           << "    std::string bodyRaw = (hdrEnd != std::string::npos) ? raw.substr(hdrEnd + 4) : \"\";\n"
+           << "    std::string headerPart = (hdrEnd != std::string::npos) ? raw.substr(0, hdrEnd) : raw;\n"
+           << "    std::string lower = headerPart; for (char& c : lower) c = (char)tolower(c);\n"
+           << "    if (lower.find(\"transfer-encoding: chunked\") != std::string::npos) {\n"
+           << "        std::string decoded; size_t p = 0;\n"
+           << "        while (p < bodyRaw.size()) {\n"
+           << "            size_t cl = bodyRaw.find(\"\\r\\n\", p); if (cl == std::string::npos) break;\n"
+           << "            long sz = strtol(bodyRaw.substr(p, cl - p).c_str(), nullptr, 16);\n"
+           << "            if (sz <= 0) break;\n"
+           << "            p = cl + 2; if (p + (size_t)sz > bodyRaw.size()) break;\n"
+           << "            decoded.append(bodyRaw, p, sz); p += sz + 2;\n"
+           << "        }\n"
+           << "        resp.body = decoded;\n"
+           << "    } else { resp.body = bodyRaw; }\n"
+           << "    return resp;\n"
+           << "}\n\n"
+           << "HttpResponse http_get(const std::string& url, const std::vector<std::string>& headers = {}) { return http_request(\"GET\", url, headers, \"\"); }\n"
+           << "HttpResponse http_post(const std::string& url, const std::string& body, const std::vector<std::string>& headers = {}) { return http_request(\"POST\", url, headers, body); }\n\n";
+    }
 
     // Basic email format validator used by changeset format(field, email) rules.
     ss << "bool isValidEmail(const std::string& s) {\n"

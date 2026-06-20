@@ -473,6 +473,10 @@ void Parser::parseConfig(std::shared_ptr<ASTProgram> program) {
             const auto& valTok = peek();
             consume(TokenType::IDENTIFIER, "Expected target identifier (e.g., web, desktop)");
             program->target = valTok.value;
+        } else if (keyTok.value == "http") {
+            const auto& valTok = peek();
+            consume(TokenType::IDENTIFIER, "Expected http value (true/false) to enable the outbound HTTP client");
+            program->useHttp = (valTok.value == "true" || valTok.value == "on" || valTok.value == "yes");
         } else {
             advance(); // consume value
         }

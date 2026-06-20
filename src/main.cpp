@@ -880,6 +880,7 @@ int main(int argc, char* argv[]) {
             int serverPid = 0;
             std::string currentDbType = "jsonl";
             std::string currentTarget = "web";
+            bool currentUseHttp = false;
 
             auto startServer = [&]() {
                 std::string dbFlags = "";
@@ -903,7 +904,9 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                std::string compileCmd = "g++ -std=c++20 " + tempCppFile + " -o " + outputExe + " -pthread" + dbFlags + desktopFlags + moduleFlags;
+                std::string httpFlags = currentUseHttp ? " -lssl -lcrypto" : "";
+
+                std::string compileCmd = "g++ -std=c++20 " + tempCppFile + " -o " + outputExe + " -pthread" + dbFlags + desktopFlags + moduleFlags + httpFlags;
                 std::cout << "[Hexagen Dev] Compiling..." << std::endl;
                 int res = std::system(compileCmd.c_str());
                 if (res != 0) {
@@ -972,6 +975,7 @@ int main(int argc, char* argv[]) {
                     std::string cppCode = codegen.generateSourceCode(true);
                     currentDbType = program->dbType;
                     currentTarget = program->target;
+                    currentUseHttp = program->useHttp;
 
 
                     std::ofstream tempFile(tempCppFile);
@@ -1117,7 +1121,9 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            std::string compileCmd = "g++ -std=c++20 " + tempCppFile + " -o " + outputExe + " -pthread" + dbFlags + desktopFlags + moduleFlags;
+            std::string httpFlags = program->useHttp ? " -lssl -lcrypto" : "";
+
+            std::string compileCmd = "g++ -std=c++20 " + tempCppFile + " -o " + outputExe + " -pthread" + dbFlags + desktopFlags + moduleFlags + httpFlags;
             std::cout << "[Hexagen] Compiling generated C++ code: " << compileCmd << "\n";
             int compileResult = std::system(compileCmd.c_str());
 
