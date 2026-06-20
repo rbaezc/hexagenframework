@@ -6,6 +6,32 @@
 #include <filesystem>
 #include <fstream>
 
+// Decode escape sequences into their literal characters. Used when emitting raw
+// C++ from `cpp "..."` blocks, where the lexer preserves escapes verbatim but the
+// output must be actual C++ source (e.g. \" must become a real ").
+static std::string decodeEscapes(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '\\' && i + 1 < in.size()) {
+            char n = in[i + 1];
+            switch (n) {
+                case 'n': out += '\n'; break;
+                case 't': out += '\t'; break;
+                case 'r': out += '\r'; break;
+                case '"': out += '"'; break;
+                case '\'': out += '\''; break;
+                case '\\': out += '\\'; break;
+                default: out += n; break;
+            }
+            ++i;
+        } else {
+            out += in[i];
+        }
+    }
+    return out;
+}
+
 std::string CodeGenerator::generateExpression(std::shared_ptr<ASTExpression> expr) {
     if (auto literal = std::dynamic_pointer_cast<ASTLiteral>(expr)) {
         if (literal->type == DataType::STRING) {
@@ -70,7 +96,7 @@ std::string CodeGenerator::generateStatement(std::shared_ptr<ASTStatement> stmt)
         ss << "            });\n";
         ss << "        }\n";
     } else if (auto cppStmt = std::dynamic_pointer_cast<ASTCppStatement>(stmt)) {
-        ss << "        " << cppStmt->code << "\n";
+        ss << "        " << decodeEscapes(cppStmt->code) << "\n";
     }
     return ss.str();
 }
@@ -989,7 +1015,7 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
             } else {
                 std::string apiEndpoint = "/execute";
                 if (!program->apis.empty()) {
-                    for (const auto& r : program->apis[0]->routes) {
+                    for (const auto& r : program->allRoutes()) {
                         if (r->targetAction == elem->targetAction) {
                             apiEndpoint = r->path;
                             break;
@@ -1010,7 +1036,7 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
             bool hasDeleteRoute = false;
             std::string deleteEndpoint = "";
             if (!program->apis.empty()) {
-                for (const auto& r : program->apis[0]->routes) {
+                for (const auto& r : program->allRoutes()) {
                     if (r->method == "DELETE") {
                         size_t dotPos = r->targetAction.find('.');
                         std::string targetSlice = (dotPos != std::string::npos) ? r->targetAction.substr(0, dotPos) : "";
@@ -1094,7 +1120,7 @@ std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
             bool hasDeleteRoute = false;
             std::string deleteEndpoint = "";
             if (!program->apis.empty()) {
-                for (const auto& r : program->apis[0]->routes) {
+                for (const auto& r : program->allRoutes()) {
                     if (r->method == "DELETE") {
                         size_t dotPos = r->targetAction.find('.');
                         std::string targetSlice = (dotPos != std::string::npos) ? r->targetAction.substr(0, dotPos) : "";
@@ -1566,7 +1592,7 @@ void CodeGenerator::generateReactPage(std::shared_ptr<ASTView> view) {
             bool hasDeleteRoute = false;
             std::string deleteEndpoint = "";
             if (!program->apis.empty()) {
-                for (const auto& r : program->apis[0]->routes) {
+                for (const auto& r : program->allRoutes()) {
                     if (r->method == "DELETE") {
                         size_t dotPos = r->targetAction.find('.');
                         std::string targetSlice = (dotPos != std::string::npos) ? r->targetAction.substr(0, dotPos) : "";
@@ -1693,7 +1719,7 @@ void CodeGenerator::generateReactPage(std::shared_ptr<ASTView> view) {
         if (elem->type == "table") {
             bool hasDeleteRoute = false;
             if (!program->apis.empty()) {
-                for (const auto& r : program->apis[0]->routes) {
+                for (const auto& r : program->allRoutes()) {
                     if (r->method == "DELETE") {
                         size_t dotPos = r->targetAction.find('.');
                         std::string targetSlice = (dotPos != std::string::npos) ? r->targetAction.substr(0, dotPos) : "";
@@ -1795,12 +1821,15 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     }
     bool hasCors = false;
     bool hasRateLimit = false;
+    bool hasLogger = false;
     int rateLimitLimit = 0;
     int rateLimitWindow = 0;
     if (!program->apis.empty()) {
-        for (const auto& mw : program->apis[0]->middlewares) {
+        for (const auto& mw : program->allMiddlewares()) {
             if (mw->name == "cors") {
                 hasCors = true;
+            } else if (mw->name == "logger") {
+                hasLogger = true;
             } else if (mw->name == "rate_limit") {
                 hasRateLimit = true;
                 if (mw->arguments.size() >= 2) {
@@ -1842,6 +1871,10 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     ss << "#include <functional>\n";
     ss << "#include <queue>\n";
     ss << "#include <unordered_map>\n";
+    ss << "#include <map>\n";
+    ss << "#include <random>\n";
+    ss << "#include <cstdlib>\n";
+    ss << "#include <ctime>\n";
     ss << "#include <arpa/inet.h>\n";
     ss << "#include <condition_variable>\n";
     ss << "#include <coroutine>\n";
@@ -2008,6 +2041,48 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "    return \"\";\n"
        << "}\n\n";
 
+    // Dynamic route matcher: compares the request's "METHOD /target" line against a
+    // route pattern that may contain :params (e.g. /api/leads/:id), filling the
+    // captured params map. Query string is ignored. Returns false on method or
+    // structural mismatch.
+    ss << "std::vector<std::string> splitPathSegments(const std::string& s) {\n"
+       << "    std::vector<std::string> out;\n"
+       << "    size_t i = 0;\n"
+       << "    while (i < s.size()) {\n"
+       << "        if (s[i] == '/') { i++; continue; }\n"
+       << "        size_t j = s.find('/', i);\n"
+       << "        if (j == std::string::npos) j = s.size();\n"
+       << "        out.push_back(s.substr(i, j - i));\n"
+       << "        i = j;\n"
+       << "    }\n"
+       << "    return out;\n"
+       << "}\n\n"
+       << "bool matchDynamicRoute(const std::string& req, const std::string& method,\n"
+       << "                       const std::string& pattern,\n"
+       << "                       std::map<std::string, std::string>& params) {\n"
+       << "    params.clear();\n"
+       << "    size_t firstLineEnd = req.find('\\n');\n"
+       << "    std::string reqLine = (firstLineEnd == std::string::npos) ? req : req.substr(0, firstLineEnd);\n"
+       << "    size_t sp1 = reqLine.find(' ');\n"
+       << "    if (sp1 == std::string::npos) return false;\n"
+       << "    if (reqLine.substr(0, sp1) != method) return false;\n"
+       << "    size_t sp2 = reqLine.find(' ', sp1 + 1);\n"
+       << "    std::string target = (sp2 == std::string::npos) ? reqLine.substr(sp1 + 1) : reqLine.substr(sp1 + 1, sp2 - sp1 - 1);\n"
+       << "    size_t qPos = target.find('?');\n"
+       << "    if (qPos != std::string::npos) target = target.substr(0, qPos);\n"
+       << "    std::vector<std::string> pSeg = splitPathSegments(pattern);\n"
+       << "    std::vector<std::string> tSeg = splitPathSegments(target);\n"
+       << "    if (pSeg.size() != tSeg.size()) return false;\n"
+       << "    for (size_t i = 0; i < pSeg.size(); ++i) {\n"
+       << "        if (!pSeg[i].empty() && pSeg[i][0] == ':') {\n"
+       << "            params[pSeg[i].substr(1)] = tSeg[i];\n"
+       << "        } else if (pSeg[i] != tSeg[i]) {\n"
+       << "            return false;\n"
+       << "        }\n"
+       << "    }\n"
+       << "    return true;\n"
+       << "}\n\n";
+
 
     // Global environment loader and helpers
     ss << "// Global environment loader and helpers\n"
@@ -2057,7 +2132,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "        return defaultVal;\n"
        << "    }\n"
        << "}\n\n"
-       << "std::string sha256(const std::string& str) {\n"
+       << "std::string sha256_bytes(const std::string& str) {\n"
        << "    unsigned int h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;\n"
        << "    unsigned int h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;\n"
        << "    unsigned int k[64] = {\n"
@@ -2115,10 +2190,20 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "        h0 += a; h1 += b; h2 += c; h3 += d;\n"
        << "        h4 += e; h5 += f; h6 += g; h7 += h;\n"
        << "    }\n"
-       << "    std::stringstream ss_hex;\n"
-       << "    ss_hex << std::hex << std::setfill('0');\n"
-       << "    ss_hex << std::setw(8) << h0 << std::setw(8) << h1 << std::setw(8) << h2 << std::setw(8) << h3\n"
-       << "           << std::setw(8) << h4 << std::setw(8) << h5 << std::setw(8) << h6 << std::setw(8) << h7;\n"
+       << "    std::string out; out.resize(32);\n"
+       << "    unsigned int hs[8] = {h0, h1, h2, h3, h4, h5, h6, h7};\n"
+       << "    for (int i = 0; i < 8; ++i) {\n"
+       << "        out[i*4]   = (char)((hs[i] >> 24) & 0xFF);\n"
+       << "        out[i*4+1] = (char)((hs[i] >> 16) & 0xFF);\n"
+       << "        out[i*4+2] = (char)((hs[i] >> 8) & 0xFF);\n"
+       << "        out[i*4+3] = (char)(hs[i] & 0xFF);\n"
+       << "    }\n"
+       << "    return out;\n"
+       << "}\n\n"
+       << "std::string sha256(const std::string& str) {\n"
+       << "    std::string d = sha256_bytes(str);\n"
+       << "    std::stringstream ss_hex; ss_hex << std::hex << std::setfill('0');\n"
+       << "    for (unsigned char c : d) ss_hex << std::setw(2) << (int)c;\n"
        << "    return ss_hex.str();\n"
        << "}\n\n"
        << "static const std::string b64_chars = \n"
@@ -2177,21 +2262,91 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "    }\n"
        << "    return base64_decode(in);\n"
        << "}\n\n"
+       // Constant-time string comparison to avoid timing attacks on token/hash checks.
+       << "bool constTimeEq(const std::string& a, const std::string& b) {\n"
+       << "    if (a.size() != b.size()) return false;\n"
+       << "    unsigned char diff = 0;\n"
+       << "    for (size_t i = 0; i < a.size(); ++i) diff |= (unsigned char)(a[i] ^ b[i]);\n"
+       << "    return diff == 0;\n"
+       << "}\n\n"
+       // HMAC-SHA256 (RFC 2104) built on the raw SHA-256 digest. Block size = 64 bytes.
+       << "std::string hmac_sha256(const std::string& key, const std::string& msg) {\n"
+       << "    std::string k = key;\n"
+       << "    if (k.size() > 64) k = sha256_bytes(k);\n"
+       << "    if (k.size() < 64) k.resize(64, '\\0');\n"
+       << "    std::string o_pad(64, 0), i_pad(64, 0);\n"
+       << "    for (int i = 0; i < 64; ++i) {\n"
+       << "        o_pad[i] = (char)((unsigned char)k[i] ^ 0x5c);\n"
+       << "        i_pad[i] = (char)((unsigned char)k[i] ^ 0x36);\n"
+       << "    }\n"
+       << "    return sha256_bytes(o_pad + sha256_bytes(i_pad + msg));\n"
+       << "}\n\n"
+       // PBKDF2-HMAC-SHA256 (RFC 8018) key derivation.
+       << "std::string pbkdf2_sha256(const std::string& password, const std::string& salt, int iterations, int dkLen) {\n"
+       << "    std::string dk;\n"
+       << "    int hLen = 32;\n"
+       << "    int blocks = (dkLen + hLen - 1) / hLen;\n"
+       << "    for (int b = 1; b <= blocks; ++b) {\n"
+       << "        std::string saltBlock = salt;\n"
+       << "        saltBlock.push_back((char)((b >> 24) & 0xFF));\n"
+       << "        saltBlock.push_back((char)((b >> 16) & 0xFF));\n"
+       << "        saltBlock.push_back((char)((b >> 8) & 0xFF));\n"
+       << "        saltBlock.push_back((char)(b & 0xFF));\n"
+       << "        std::string u = hmac_sha256(password, saltBlock);\n"
+       << "        std::string t = u;\n"
+       << "        for (int i = 1; i < iterations; ++i) {\n"
+       << "            u = hmac_sha256(password, u);\n"
+       << "            for (size_t j = 0; j < t.size(); ++j) t[j] = (char)((unsigned char)t[j] ^ (unsigned char)u[j]);\n"
+       << "        }\n"
+       << "        dk += t;\n"
+       << "    }\n"
+       << "    return dk.substr(0, dkLen);\n"
+       << "}\n\n"
+       // Hash a password with a random 16-byte salt. Output: pbkdf2$iters$saltB64$hashB64.
+       << "std::string hashPassword(const std::string& password) {\n"
+       << "    int iterations = 100000;\n"
+       << "    std::string salt; salt.resize(16);\n"
+       << "    std::random_device rd;\n"
+       << "    for (int i = 0; i < 16; ++i) salt[i] = (char)(rd() & 0xFF);\n"
+       << "    std::string dk = pbkdf2_sha256(password, salt, iterations, 32);\n"
+       << "    return \"pbkdf2$\" + std::to_string(iterations) + \"$\" + base64_encode(salt) + \"$\" + base64_encode(dk);\n"
+       << "}\n\n"
+       // Verify a password against a stored hash. Falls back to legacy sha256(hex) so
+       // existing user records keep working after upgrading the framework.
+       << "bool verifyPassword(const std::string& password, const std::string& stored) {\n"
+       << "    if (stored.rfind(\"pbkdf2$\", 0) == 0) {\n"
+       << "        size_t p1 = stored.find('$', 7);\n"
+       << "        if (p1 == std::string::npos) return false;\n"
+       << "        size_t p2 = stored.find('$', p1 + 1);\n"
+       << "        if (p2 == std::string::npos) return false;\n"
+       << "        int iterations = std::atoi(stored.substr(7, p1 - 7).c_str());\n"
+       << "        std::string salt = base64_decode(stored.substr(p1 + 1, p2 - p1 - 1));\n"
+       << "        std::string expected = base64_decode(stored.substr(p2 + 1));\n"
+       << "        std::string dk = pbkdf2_sha256(password, salt, iterations, (int)expected.size());\n"
+       << "        return constTimeEq(dk, expected);\n"
+       << "    }\n"
+       << "    return constTimeEq(sha256(password), stored);\n"
+       << "}\n\n"
+       // Standard JWT (HS256): base64url(header).base64url(payload).base64url(HMAC).
        << "std::string generateSessionToken(const std::string& payload) {\n"
        << "    std::string secret = getEnvOr(\"JWT_SECRET\", \"hexagen_secret_key_2026\");\n"
-       << "    std::string encodedPayload = base64url_encode(payload);\n"
-       << "    std::string signature = sha256(encodedPayload + \".\" + secret);\n"
-       << "    return encodedPayload + \".\" + signature;\n"
+       << "    std::string encHeader = base64url_encode(\"{\\\"alg\\\":\\\"HS256\\\",\\\"typ\\\":\\\"JWT\\\"}\");\n"
+       << "    std::string encPayload = base64url_encode(payload);\n"
+       << "    std::string signingInput = encHeader + \".\" + encPayload;\n"
+       << "    std::string signature = base64url_encode(hmac_sha256(secret, signingInput));\n"
+       << "    return signingInput + \".\" + signature;\n"
        << "}\n\n"
        << "bool verifySessionToken(const std::string& token, std::string& payloadOut) {\n"
        << "    std::string secret = getEnvOr(\"JWT_SECRET\", \"hexagen_secret_key_2026\");\n"
-       << "    size_t dot = token.find('.');\n"
-       << "    if (dot == std::string::npos) return false;\n"
-       << "    std::string payload = token.substr(0, dot);\n"
-       << "    std::string signature = token.substr(dot + 1);\n"
-       << "    std::string expectedSignature = sha256(payload + \".\" + secret);\n"
-       << "    if (signature != expectedSignature) return false;\n"
-       << "    payloadOut = base64url_decode(payload);\n"
+       << "    size_t dot1 = token.find('.');\n"
+       << "    if (dot1 == std::string::npos) return false;\n"
+       << "    size_t dot2 = token.find('.', dot1 + 1);\n"
+       << "    if (dot2 == std::string::npos) return false;\n"
+       << "    std::string signingInput = token.substr(0, dot2);\n"
+       << "    std::string signature = token.substr(dot2 + 1);\n"
+       << "    std::string expected = base64url_encode(hmac_sha256(secret, signingInput));\n"
+       << "    if (!constTimeEq(signature, expected)) return false;\n"
+       << "    payloadOut = base64url_decode(token.substr(dot1 + 1, dot2 - dot1 - 1));\n"
        << "    return true;\n"
        << "}\n\n"
        << "std::string getHeaderValue(const std::string& req, const std::string& headerName) {\n"
@@ -2701,6 +2856,19 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "    std::string req;\n";
         ss << "    co_await AsyncRead{client_fd, req};\n";
         ss << "    if (!req.empty()) {\n";
+        ss << "        std::map<std::string, std::string> pathParams; // captured dynamic route params (:id)\n";
+        ss << "        try {\n";
+        if (hasLogger) {
+            // logger middleware: emit a one-line access log per request.
+            ss << "            {\n";
+            ss << "                size_t _lf = req.find('\\n');\n";
+            ss << "                std::string _line = (_lf == std::string::npos) ? req : req.substr(0, _lf);\n";
+            ss << "                while (!_line.empty() && (_line.back() == '\\r' || _line.back() == '\\n')) _line.pop_back();\n";
+            ss << "                std::time_t _t = std::time(nullptr);\n";
+            ss << "                char _tb[32]; std::strftime(_tb, sizeof(_tb), \"%Y-%m-%d %H:%M:%S\", std::localtime(&_t));\n";
+            ss << "                std::cout << \"[\" << _tb << \"] \" << inet_ntoa(address.sin_addr) << \" \" << _line << std::endl;\n";
+            ss << "            }\n";
+        }
         if (program->frontend == "react") {
             ss << "            bool handled_static = false;\n";
             ss << "            if (req.rfind(\"GET /\", 0) == 0 && req.rfind(\"GET /api/\", 0) != 0) {\n";
@@ -2759,7 +2927,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             ss << "            bool is_api_req = (req.find(\"/api/\") != std::string::npos);\n";
             if (!program->apis.empty()) {
                 ss << "            if (!is_api_req) {\n";
-                for (const auto& r : program->apis[0]->routes) {
+                for (const auto& r : program->allRoutes()) {
                     if (r->method != "WEBSOCKET") {
                         ss << "                {\n";
                         ss << "                    size_t pos = req.find(\" \" \"" << r->path << "\");\n";
@@ -3091,7 +3259,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                     ss << "                        " << userSlice->name << " user;\n";
                     for (const auto& f : userSlice->fields) {
                         if (f->name == passwordField) {
-                            ss << "                        user." << f->name << " = sha256(passVal);\n";
+                            ss << "                        user." << f->name << " = hashPassword(passVal);\n";
                         } else if (f->name == emailField) {
                             ss << "                        user." << f->name << " = emailVal;\n";
                         } else {
@@ -3125,7 +3293,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                     ss << "                std::string emailVal = getJSONVal(body, \"" << emailField << "\");\n";
                     ss << "                std::string passVal = getJSONVal(body, \"" << passwordField << "\");\n";
                     ss << "                " << userSlice->name << " user;\n";
-                    ss << "                if (emailVal.empty() || passVal.empty() || !" << userSlice->name << "::findUser(emailVal, user) || user." << passwordField << " != sha256(passVal)) {\n";
+                    ss << "                if (emailVal.empty() || passVal.empty() || !" << userSlice->name << "::findUser(emailVal, user) || !verifyPassword(passVal, user." << passwordField << ")) {\n";
                     ss << "                    std::string msg = \"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"Invalid email or password\\\"}\";\n";
                     ss << "                    std::stringstream resp;\n";
                     ss << "                    resp << \"HTTP/1.1 401 Unauthorized\\r\\n\"\n";
@@ -3159,12 +3327,41 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
 
         // Routing for API endpoints
         if (!program->apis.empty()) {
-            for (const auto& r : program->apis[0]->routes) {
+            for (const auto& r : program->allRoutes()) {
+                bool isDynamic = (r->path.find(':') != std::string::npos);
+                // Use exact segment matching for ALL routes (not substring find), so a
+                // route like "/" no longer shadows "/api/leads/:id". matchDynamicRoute
+                // handles static patterns (no :params) as plain segment equality.
+                std::string cond = "matchDynamicRoute(req, \"" + r->method + "\", \"" + r->path + "\", pathParams)";
                 if (isFirstRoute) {
-                    ss << "            if (req.find(\"" << r->method << " " << r->path << "\") != std::string::npos) {\n";
+                    ss << "            if (" << cond << ") {\n";
                     isFirstRoute = false;
                 } else {
-                    ss << "            else if (req.find(\"" << r->method << " " << r->path << "\") != std::string::npos) {\n";
+                    ss << "            else if (" << cond << ") {\n";
+                }
+                // Expose captured path params as typed-friendly locals and bind them
+                // to matching slice fields below.
+                std::vector<std::string> pathParamNames;
+                if (isDynamic) {
+                    std::vector<std::string> segs;
+                    {
+                        size_t i = 0;
+                        while (i < r->path.size()) {
+                            if (r->path[i] == '/') { i++; continue; }
+                            size_t j = r->path.find('/', i);
+                            if (j == std::string::npos) j = r->path.size();
+                            segs.push_back(r->path.substr(i, j - i));
+                            i = j;
+                        }
+                    }
+                    for (const auto& seg : segs) {
+                        if (!seg.empty() && seg[0] == ':') {
+                            std::string pname = seg.substr(1);
+                            pathParamNames.push_back(pname);
+                            ss << "                std::string param_" << pname
+                               << " = pathParams.count(\"" << pname << "\") ? pathParams[\"" << pname << "\"] : \"\";\n";
+                        }
+                    }
                 }
                 if (r->isSecure) {
                     ss << "                std::string authHeader = getHeaderValue(req, \"Authorization\");\n";
@@ -3212,17 +3409,29 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
 
                 if (!sliceName.empty()) {
                     if (r->method == "DELETE") {
-                        std::string firstField = "";
+                        // Prefer deleting by a path param (e.g. DELETE /api/leads/:id)
+                        // matching a field name; otherwise fall back to the body.
+                        std::string delField = "";
+                        std::string delValueExpr = "";
                         for (const auto& s : program->slices) {
                             if (s->name == sliceName) {
-                                if (!s->fields.empty()) {
-                                    firstField = s->fields[0]->name;
+                                for (const auto& f : s->fields) {
+                                    for (const auto& pn : pathParamNames) {
+                                        if (pn == f->name) {
+                                            delField = f->name;
+                                            delValueExpr = "param_" + pn;
+                                        }
+                                    }
+                                }
+                                if (delField.empty() && !s->fields.empty()) {
+                                    delField = s->fields[0]->name;
+                                    delValueExpr = "getJSONVal(body, \"" + delField + "\")";
                                 }
                             }
                         }
-                        if (!firstField.empty()) {
-                            ss << "                std::string valToDelete = getJSONVal(body, \"" << firstField << "\");\n";
-                            ss << "                " << sliceName << "::deleteRecord(\"" << firstField << "\", valToDelete);\n";
+                        if (!delField.empty()) {
+                            ss << "                std::string valToDelete = " << delValueExpr << ";\n";
+                            ss << "                " << sliceName << "::deleteRecord(\"" << delField << "\", valToDelete);\n";
                         }
                         ss << "                " << sliceName << " instance;\n";
                         ss << "                instance." << actionName << "();\n";
@@ -3231,8 +3440,16 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                         for (const auto& slice : program->slices) {
                             if (slice->name == sliceName) {
                                 for (const auto& field : slice->fields) {
+                                    bool isPathParam = false;
+                                    for (const auto& pn : pathParamNames) {
+                                        if (pn == field->name) isPathParam = true;
+                                    }
                                     ss << "                {\n";
-                                    ss << "                    std::string val = isMultipart ? getMultipartVal(mpParts, \"" << field->name << "\") : getJSONVal(body, \"" << field->name << "\");\n";
+                                    if (isPathParam) {
+                                        ss << "                    std::string val = param_" << field->name << ";\n";
+                                    } else {
+                                        ss << "                    std::string val = isMultipart ? getMultipartVal(mpParts, \"" << field->name << "\") : getJSONVal(body, \"" << field->name << "\");\n";
+                                    }
                                     if (field->type == DataType::INT || field->type == DataType::RELATION) {
                                         ss << "                    instance." << field->name << " = safeStoi(val);\n";
                                     } else if (field->type == DataType::STRING) {
@@ -3277,6 +3494,31 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "                     << msg;\n";
         ss << "                send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
         ss << "            }\n";
+
+        // Global exception handler: any uncaught std::exception (or unknown throw)
+        // during request dispatch becomes a clean HTTP 500 instead of crashing the
+        // whole server process.
+        ss << "        } catch (const std::exception& ex) {\n";
+        ss << "            std::cerr << \"[Hexagen 500] Unhandled exception: \" << ex.what() << std::endl;\n";
+        ss << "            std::string msg = std::string(\"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"Internal Server Error\\\"}\");\n";
+        ss << "            std::stringstream resp;\n";
+        ss << "            resp << \"HTTP/1.1 500 Internal Server Error\\r\\n\"\n";
+        ss << "                 << \"Content-Type: application/json\\r\\n\"\n";
+        ss << "                 << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+        ss << "                 << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\"\n";
+        ss << "                 << msg;\n";
+        ss << "            send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+        ss << "        } catch (...) {\n";
+        ss << "            std::cerr << \"[Hexagen 500] Unhandled non-standard exception\" << std::endl;\n";
+        ss << "            std::string msg = std::string(\"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"Internal Server Error\\\"}\");\n";
+        ss << "            std::stringstream resp;\n";
+        ss << "            resp << \"HTTP/1.1 500 Internal Server Error\\r\\n\"\n";
+        ss << "                 << \"Content-Type: application/json\\r\\n\"\n";
+        ss << "                 << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+        ss << "                 << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\"\n";
+        ss << "                 << msg;\n";
+        ss << "            send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+        ss << "        }\n";
 
         ss << "    }\n";
         ss << "    close(client_fd);\n";

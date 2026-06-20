@@ -374,6 +374,25 @@ public:
     std::vector<std::shared_ptr<ASTApi>> apis;
     std::vector<std::shared_ptr<ASTJob>> jobs;
 
+    // Flatten the routes declared across ALL api blocks (modular slices) so the
+    // codegen no longer processes only apis[0].
+    std::vector<std::shared_ptr<ASTRoute>> allRoutes() const {
+        std::vector<std::shared_ptr<ASTRoute>> out;
+        for (const auto& api : apis) {
+            for (const auto& r : api->routes) out.push_back(r);
+        }
+        return out;
+    }
+
+    // Flatten the middlewares declared across ALL api blocks.
+    std::vector<std::shared_ptr<ASTMiddleware>> allMiddlewares() const {
+        std::vector<std::shared_ptr<ASTMiddleware>> out;
+        for (const auto& api : apis) {
+            for (const auto& mw : api->middlewares) out.push_back(mw);
+        }
+        return out;
+    }
+
     void print(int indent = 0) const override {
         std::cout << "Program AST (DB Engine: " << dbType << "):\n";
         for (const auto& slice : slices) slice->print(indent + 2);
