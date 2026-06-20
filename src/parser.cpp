@@ -175,6 +175,7 @@ std::shared_ptr<ASTStatement> Parser::parseStatement() {
             }
         }
         consume(TokenType::RPAREN, "Expected ')' after enqueue arguments");
+        return enqueue;
     } else if (match(TokenType::CPP)) {
         const auto& codeTok = peek();
         consume(TokenType::STRING_LITERAL, "Expected string literal containing C++ code after 'cpp'");

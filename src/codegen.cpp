@@ -91,9 +91,32 @@ std::string CodeGenerator::generateStatement(std::shared_ptr<ASTStatement> stmt)
         for (const auto& arg : enqueueStmt->arguments) {
             ss << "            jobInst->" << arg.first << " = " << generateExpression(arg.second) << ";\n";
         }
-        ss << "            enqueue_background_task([jobInst]() {\n";
-        ss << "                jobInst->Run();\n";
-        ss << "            });\n";
+        // Serialize all job fields so the job is durable (persisted + recoverable).
+        std::shared_ptr<ASTJob> jdef;
+        for (const auto& j : program->jobs) if (j->name == enqueueStmt->jobName) jdef = j;
+        ss << "            std::stringstream _aj; _aj << \"{\";\n";
+        if (jdef) {
+            for (size_t i = 0; i < jdef->fields.size(); ++i) {
+                const auto& f = jdef->fields[i];
+                ss << "            _aj << \"\\\"" << f->name << "\\\":\";\n";
+                if (f->type == DataType::STRING) {
+                    ss << "            _aj << \"\\\"\" << jobInst->" << f->name << " << \"\\\"\";\n";
+                } else if (f->type == DataType::BOOL) {
+                    ss << "            _aj << (jobInst->" << f->name << " ? \"true\" : \"false\");\n";
+                } else {
+                    ss << "            _aj << jobInst->" << f->name << ";\n";
+                }
+                if (i + 1 < jdef->fields.size()) ss << "            _aj << \",\";\n";
+            }
+        }
+        ss << "            _aj << \"}\";\n";
+        std::string entry = "";
+        if (jdef) {
+            for (const auto& a : jdef->actions) if (a->name == "Run") entry = "Run";
+            if (entry.empty() && !jdef->actions.empty()) entry = jdef->actions[0]->name;
+        }
+        if (entry.empty()) entry = "Run";
+        ss << "            enqueue_persisted_job(\"" << enqueueStmt->jobName << "\", _aj.str(), [jobInst]() { jobInst->" << entry << "(); });\n";
         ss << "        }\n";
     } else if (auto cppStmt = std::dynamic_pointer_cast<ASTCppStatement>(stmt)) {
         ss << "        " << decodeEscapes(cppStmt->code) << "\n";
@@ -1922,6 +1945,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     ss << "#include <random>\n";
     ss << "#include <cstdlib>\n";
     ss << "#include <ctime>\n";
+    ss << "#include <atomic>\n";
     ss << "#include <arpa/inet.h>\n";
     ss << "#include <condition_variable>\n";
     ss << "#include <coroutine>\n";
@@ -1984,37 +2008,172 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     }
     ss << "\n";
 
-    ss << "// Asynchronous Job Queue and Worker Pool\n"
-       << "std::queue<std::function<void()>> global_job_queue;\n"
+    ss << "// Asynchronous Job Queue + durability + retry + supervision (OTP/Oban-style)\n"
+       << "std::string base64_encode(const std::string& in);\n"
+       << "std::string base64_decode(const std::string& in);\n"
+       << "std::string getJSONVal(const std::string& json, const std::string& field);\n"
+       << "void dispatch_job(const std::string& name, const std::string& argsJson);\n\n"
+       << "struct PendingJob {\n"
+       << "    std::string id;\n"
+       << "    std::string name;\n"
+       << "    std::string args;\n"
+       << "    int attempts = 0;\n"
+       << "    std::function<void()> run;\n"
+       << "};\n"
+       << "std::queue<PendingJob> global_job_queue;\n"
        << "std::mutex global_job_queue_mutex;\n"
-       << "std::condition_variable global_job_queue_cv;\n\n"
-       << "void enqueue_background_task(std::function<void()> task) {\n"
-       << "    {\n"
-       << "        std::lock_guard<std::mutex> lock(global_job_queue_mutex);\n"
-       << "        global_job_queue.push(task);\n"
-       << "    }\n"
+       << "std::condition_variable global_job_queue_cv;\n"
+       << "std::mutex jobs_file_mutex;\n"
+       << "static const char* JOBS_FILE = \"jobs_pending.jsonl\";\n\n"
+       << "std::string makeJobId() {\n"
+       << "    static long counter = 0;\n"
+       << "    std::lock_guard<std::mutex> lk(jobs_file_mutex);\n"
+       << "    long n = ++counter;\n"
+       << "    auto now = std::chrono::steady_clock::now().time_since_epoch().count();\n"
+       << "    return std::to_string(now) + \"-\" + std::to_string(n);\n"
+       << "}\n\n"
+       << "void persistJob(const std::string& id, const std::string& name, const std::string& args, int attempts) {\n"
+       << "    std::lock_guard<std::mutex> lk(jobs_file_mutex);\n"
+       << "    std::ofstream f(JOBS_FILE, std::ios::app);\n"
+       << "    if (f.is_open()) f << \"{\\\"id\\\":\\\"\" << id << \"\\\",\\\"name\\\":\\\"\" << name\n"
+       << "                        << \"\\\",\\\"args\\\":\\\"\" << base64_encode(args) << \"\\\",\\\"attempts\\\":\" << attempts << \"}\\n\";\n"
+       << "}\n\n"
+       << "void removeJob(const std::string& id) {\n"
+       << "    std::lock_guard<std::mutex> lk(jobs_file_mutex);\n"
+       << "    std::ifstream in(JOBS_FILE);\n"
+       << "    std::vector<std::string> keep; std::string line;\n"
+       << "    while (std::getline(in, line)) { if (line.empty()) continue; if (getJSONVal(line, \"id\") != id) keep.push_back(line); }\n"
+       << "    in.close();\n"
+       << "    std::ofstream out(JOBS_FILE, std::ios::trunc);\n"
+       << "    for (auto& l : keep) out << l << \"\\n\";\n"
+       << "}\n\n"
+       << "void enqueue_persisted_job(const std::string& name, const std::string& args, std::function<void()> run) {\n"
+       << "    std::string id = makeJobId();\n"
+       << "    persistJob(id, name, args, 0);\n"
+       << "    { std::lock_guard<std::mutex> lock(global_job_queue_mutex); global_job_queue.push({id, name, args, 0, run}); }\n"
        << "    global_job_queue_cv.notify_one();\n"
        << "}\n\n"
-       << "void job_worker_thread() {\n"
+       << "void enqueue_background_task(std::function<void()> task) {\n"
+       << "    { std::lock_guard<std::mutex> lock(global_job_queue_mutex); global_job_queue.push({\"\", \"\", \"\", 0, task}); }\n"
+       << "    global_job_queue_cv.notify_one();\n"
+       << "}\n\n"
+       << "void run_job_worker() {\n"
+       << "    const int maxAttempts = 3;\n"
        << "    while (true) {\n"
-       << "        std::function<void()> task;\n"
+       << "        PendingJob job;\n"
        << "        {\n"
        << "            std::unique_lock<std::mutex> lock(global_job_queue_mutex);\n"
        << "            global_job_queue_cv.wait(lock, [] { return !global_job_queue.empty(); });\n"
-       << "            task = global_job_queue.front();\n"
+       << "            job = global_job_queue.front();\n"
        << "            global_job_queue.pop();\n"
        << "        }\n"
-       << "        if (task) {\n"
+       << "        if (!job.run) continue;\n"
+       << "        bool ok = false;\n"
+       << "        for (int attempt = job.attempts + 1; attempt <= maxAttempts && !ok; ++attempt) {\n"
+       << "            try { job.run(); ok = true; }\n"
+       << "            catch (const std::exception& e) {\n"
+       << "                std::cerr << \"[Job] '\" << job.name << \"' attempt \" << attempt << \"/\" << maxAttempts << \" failed: \" << e.what() << std::endl;\n"
+       << "                if (attempt < maxAttempts) std::this_thread::sleep_for(std::chrono::milliseconds(50 * attempt));\n"
+       << "            }\n"
+       << "            catch (...) {\n"
+       << "                std::cerr << \"[Job] '\" << job.name << \"' attempt \" << attempt << \" failed (unknown)\" << std::endl;\n"
+       << "                if (attempt < maxAttempts) std::this_thread::sleep_for(std::chrono::milliseconds(50 * attempt));\n"
+       << "            }\n"
+       << "        }\n"
+       << "        if (!ok) std::cerr << \"[Job] '\" << job.name << \"' permanently failed after \" << maxAttempts << \" attempts\" << std::endl;\n"
+       << "        if (!job.id.empty()) removeJob(job.id);\n"
+       << "    }\n"
+       << "}\n\n"
+       << "// Supervisor: keep N workers alive; restart any that exit unexpectedly.\n"
+       << "void start_job_supervisor(int n) {\n"
+       << "    for (int i = 0; i < n; ++i) {\n"
+       << "        std::thread([i]() {\n"
+       << "            while (true) {\n"
+       << "                std::thread w(run_job_worker);\n"
+       << "                w.join();\n"
+       << "                std::cerr << \"[Supervisor] job worker \" << i << \" exited; restarting\" << std::endl;\n"
+       << "                std::this_thread::sleep_for(std::chrono::milliseconds(100));\n"
+       << "            }\n"
+       << "        }).detach();\n"
+       << "    }\n"
+       << "}\n\n"
+       << "// Crash recovery: replay jobs persisted by a previous run.\n"
+       << "void recover_persisted_jobs() {\n"
+       << "    std::vector<PendingJob> recovered;\n"
+       << "    {\n"
+       << "        std::lock_guard<std::mutex> lk(jobs_file_mutex);\n"
+       << "        std::ifstream in(JOBS_FILE);\n"
+       << "        if (!in.is_open()) return;\n"
+       << "        std::string line;\n"
+       << "        while (std::getline(in, line)) {\n"
+       << "            if (line.empty()) continue;\n"
+       << "            PendingJob j;\n"
+       << "            j.id = getJSONVal(line, \"id\");\n"
+       << "            j.name = getJSONVal(line, \"name\");\n"
+       << "            j.args = base64_decode(getJSONVal(line, \"args\"));\n"
+       << "            j.attempts = std::atoi(getJSONVal(line, \"attempts\").c_str());\n"
+       << "            recovered.push_back(j);\n"
+       << "        }\n"
+       << "    }\n"
+       << "    for (auto& j : recovered) {\n"
+       << "        std::string nm = j.name, ar = j.args;\n"
+       << "        j.run = [nm, ar]() { dispatch_job(nm, ar); };\n"
+       << "        { std::lock_guard<std::mutex> lock(global_job_queue_mutex); global_job_queue.push(j); }\n"
+       << "        global_job_queue_cv.notify_one();\n"
+       << "    }\n"
+       << "    if (!recovered.empty()) std::cerr << \"[Supervisor] recovered \" << recovered.size() << \" persisted job(s)\" << std::endl;\n"
+       << "}\n\n";
+
+    // GenServer: a stateful in-memory process (actor model). Each instance owns a
+    // dedicated thread with a message mailbox; state is mutated only by that thread,
+    // so it is safe to cast() messages concurrently. Handler exceptions are isolated.
+    ss << "template <typename State>\n"
+       << "class GenServer {\n"
+       << "public:\n"
+       << "    using Handler = std::function<void(State&, const std::string&)>;\n"
+       << "    GenServer(State initial, Handler handler)\n"
+       << "        : state_(initial), handler_(handler), running_(true) {\n"
+       << "        worker_ = std::thread([this]() { loop(); });\n"
+       << "    }\n"
+       << "    ~GenServer() { stop(); }\n"
+       << "    void cast(const std::string& msg) {\n"
+       << "        { std::lock_guard<std::mutex> lk(mtx_); mailbox_.push(msg); }\n"
+       << "        cv_.notify_one();\n"
+       << "    }\n"
+       << "    State get() { std::lock_guard<std::mutex> lk(stateMtx_); return state_; }\n"
+       << "    void stop() {\n"
+       << "        if (!running_.exchange(false)) return;\n"
+       << "        cv_.notify_one();\n"
+       << "        if (worker_.joinable()) worker_.join();\n"
+       << "    }\n"
+       << "private:\n"
+       << "    void loop() {\n"
+       << "        while (running_) {\n"
+       << "            std::string msg;\n"
+       << "            {\n"
+       << "                std::unique_lock<std::mutex> lk(mtx_);\n"
+       << "                cv_.wait(lk, [this]() { return !mailbox_.empty() || !running_; });\n"
+       << "                if (!running_ && mailbox_.empty()) break;\n"
+       << "                msg = mailbox_.front(); mailbox_.pop();\n"
+       << "            }\n"
        << "            try {\n"
-       << "                task();\n"
+       << "                std::lock_guard<std::mutex> lk(stateMtx_);\n"
+       << "                handler_(state_, msg);\n"
        << "            } catch (const std::exception& e) {\n"
-       << "                std::cerr << \"[Job Worker Error] \" << e.what() << std::endl;\n"
+       << "                std::cerr << \"[GenServer] handler error: \" << e.what() << std::endl;\n"
        << "            } catch (...) {\n"
-       << "                std::cerr << \"[Job Worker Error] Unknown error\" << std::endl;\n"
+       << "                std::cerr << \"[GenServer] handler error (unknown)\" << std::endl;\n"
        << "            }\n"
        << "        }\n"
        << "    }\n"
-       << "}\n\n";
+       << "    State state_;\n"
+       << "    Handler handler_;\n"
+       << "    std::queue<std::string> mailbox_;\n"
+       << "    std::mutex mtx_, stateMtx_;\n"
+       << "    std::condition_variable cv_;\n"
+       << "    std::atomic<bool> running_;\n"
+       << "    std::thread worker_;\n"
+       << "};\n\n";
 
     ss << "// IP-based Rate Limiting Middleware State & Checker\n"
        << "struct RateLimitEntry {\n"
@@ -3014,6 +3173,36 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         }
     }
 
+    // dispatch_job: reconstruct a persisted job from its serialized args and run it.
+    // Used by crash recovery (recover_persisted_jobs) to rebuild closures.
+    ss << "void dispatch_job(const std::string& name, const std::string& argsJson) {\n";
+    ss << "    (void)argsJson;\n";
+    {
+        bool firstJob = true;
+        for (const auto& job : program->jobs) {
+            ss << "    " << (firstJob ? "if" : "else if") << " (name == \"" << job->name << "\") {\n";
+            firstJob = false;
+            ss << "        auto inst = std::make_shared<Job_" << job->name << ">();\n";
+            for (const auto& f : job->fields) {
+                if (f->type == DataType::STRING) {
+                    ss << "        inst->" << f->name << " = getJSONVal(argsJson, \"" << f->name << "\");\n";
+                } else if (f->type == DataType::INT || f->type == DataType::RELATION) {
+                    ss << "        inst->" << f->name << " = safeStoi(getJSONVal(argsJson, \"" << f->name << "\"));\n";
+                } else if (f->type == DataType::FLOAT) {
+                    ss << "        inst->" << f->name << " = safeStod(getJSONVal(argsJson, \"" << f->name << "\"));\n";
+                } else if (f->type == DataType::BOOL) {
+                    ss << "        inst->" << f->name << " = (getJSONVal(argsJson, \"" << f->name << "\") == \"true\");\n";
+                }
+            }
+            std::string entry = "";
+            for (const auto& a : job->actions) { if (a->name == "Run") entry = "Run"; }
+            if (entry.empty() && !job->actions.empty()) entry = job->actions[0]->name;
+            if (!entry.empty()) ss << "        inst->" << entry << "();\n";
+            ss << "    }\n";
+        }
+    }
+    ss << "}\n\n";
+
     ss << "// Raw UI View HTML Pages\n";
     for (const auto& view : program->views) {
         ss << "const char* HTML_" << view->name << " = R\"HTML(\n";
@@ -3731,10 +3920,9 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
 
         ss << "int main() {\n";
         ss << "    initDatabase();\n";
-        ss << "    // Spawn worker threads for background jobs\n";
-        ss << "    for (int i = 0; i < 4; ++i) {\n";
-        ss << "        std::thread(job_worker_thread).detach();\n";
-        ss << "    }\n";
+        ss << "    // Background jobs: recover persisted jobs, then start a supervised worker pool\n";
+        ss << "    recover_persisted_jobs();\n";
+        ss << "    start_job_supervisor(std::atoi(getEnvOr(\"JOB_WORKERS\", \"4\")));\n";
         ss << "    int server_fd, client_fd;\n";
         ss << "    struct sockaddr_in address;\n";
         ss << "    int opt = 1;\n";
