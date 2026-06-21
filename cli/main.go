@@ -242,6 +242,7 @@ func handleDev(inputPath string) {
 		compileArgs := []string{"-std=c++20", tempCppFile, "-o", outputExe, "-pthread"}
 		compileArgs = addModuleFlags(compileArgs)
 		compileArgs = addHttpFlags(compileArgs, cppCode)
+		compileArgs = addRequiredLibFlags(compileArgs, cppCode)
 		if strings.Contains(cppCode, "Database Engine: sqlite") {
 			compileArgs = append(compileArgs, "-lsqlite3")
 		} else if strings.Contains(cppCode, "Database Engine: postgres") || strings.Contains(cppCode, "Database Engine: postgresql") {
@@ -463,6 +464,7 @@ func main() {
 		compileArgs := []string{"-std=c++20", tempCppFile, "-o", outputExe, "-pthread"}
 		compileArgs = addModuleFlags(compileArgs)
 		compileArgs = addHttpFlags(compileArgs, cppCode)
+		compileArgs = addRequiredLibFlags(compileArgs, cppCode)
 		if strings.Contains(cppCode, "Database Engine: sqlite") {
 			compileArgs = append(compileArgs, "-lsqlite3")
 		} else if strings.Contains(cppCode, "Database Engine: postgres") || strings.Contains(cppCode, "Database Engine: postgresql") {
@@ -1937,6 +1939,36 @@ func getPkgConfigFlags() []string {
 func addHttpFlags(compileArgs []string, cppCode string) []string {
 	if strings.Contains(cppCode, "<openssl/ssl.h>") {
 		compileArgs = append(compileArgs, "-lssl", "-lcrypto")
+	}
+	return compileArgs
+}
+
+// addRequiredLibFlags links extra libraries declared via `config { requires: ... }`,
+// detected from the emitted "// hexagen:requires ..." marker. Known aliases expand
+// to canonical flags; anything else links as -l<name>.
+func addRequiredLibFlags(compileArgs []string, cppCode string) []string {
+	marker := "// hexagen:requires"
+	idx := strings.Index(cppCode, marker)
+	if idx == -1 {
+		return compileArgs
+	}
+	line := cppCode[idx+len(marker):]
+	if nl := strings.IndexByte(line, '\n'); nl != -1 {
+		line = line[:nl]
+	}
+	for _, lib := range strings.Fields(line) {
+		switch lib {
+		case "ssl":
+			compileArgs = append(compileArgs, "-lssl", "-lcrypto")
+		case "curl":
+			compileArgs = append(compileArgs, "-lcurl")
+		case "crypto":
+			compileArgs = append(compileArgs, "-lcrypto")
+		case "zlib", "z":
+			compileArgs = append(compileArgs, "-lz")
+		default:
+			compileArgs = append(compileArgs, "-l"+lib)
+		}
 	}
 	return compileArgs
 }

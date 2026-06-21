@@ -477,6 +477,14 @@ void Parser::parseConfig(std::shared_ptr<ASTProgram> program) {
             const auto& valTok = peek();
             consume(TokenType::IDENTIFIER, "Expected http value (true/false) to enable the outbound HTTP client");
             program->useHttp = (valTok.value == "true" || valTok.value == "on" || valTok.value == "yes");
+        } else if (keyTok.value == "requires") {
+            // One or more library names, comma-separated (e.g. requires: curl, ssl).
+            while (true) {
+                const auto& libTok = peek();
+                consume(TokenType::IDENTIFIER, "Expected a library name in 'requires'");
+                program->requiredLibs.push_back(libTok.value);
+                if (!match(TokenType::COMMA)) break;
+            }
         } else {
             advance(); // consume value
         }

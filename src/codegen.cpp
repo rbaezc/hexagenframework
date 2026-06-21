@@ -1921,6 +1921,11 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     std::stringstream ss;
     ss << "// Generated automatically by Hexagen Framework\n";
     ss << "// Database Engine: " << program->dbType << "\n";
+    if (!program->requiredLibs.empty()) {
+        ss << "// hexagen:requires";
+        for (const auto& lib : program->requiredLibs) ss << " " << lib;
+        ss << "\n";
+    }
     if (program->dbType == "sqlite") {
         ss << "#include <sqlite3.h>\n";
     } else if (program->dbType == "postgres" || program->dbType == "postgresql") {
