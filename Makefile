@@ -40,4 +40,12 @@ install: all
 	install -m 0755 $(TARGET_CLI) /usr/local/bin/$(TARGET_CLI)
 	install -m 0755 $(TARGET_CORE) /usr/local/bin/$(TARGET_CORE)
 
-.PHONY: all clean cli install
+# Conformance / golden tests (characterization). `golden` (re)records the frozen
+# transpiler output; `golden-verify` fails if current output drifts.
+golden: $(TARGET_CORE)
+	@bash conformance/run.sh record
+
+golden-verify: $(TARGET_CORE)
+	@bash conformance/run.sh verify
+
+.PHONY: all clean cli install golden golden-verify
