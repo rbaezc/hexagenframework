@@ -12,12 +12,21 @@ OBJS = $(SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 # that crash from struct-layout mismatches when an AST/header is edited).
 HEADERS = $(wildcard $(SRC_DIR)/*.hpp) $(wildcard $(SRC_DIR)/*.h)
 
+# Runtime library: real, compilable C++ fragments amalgamated into an embedded
+# header of raw-string constants that the compiler bakes in (keeps generated
+# binaries self-contained while the runtime source stays real, testable C++).
+RUNTIME_SRCS = $(wildcard $(SRC_DIR)/runtime/*.hpp)
+EMBEDDED = $(BUILD_DIR)/embedded_runtime.hpp
+
 all: $(TARGET_CORE) cli
 
 $(TARGET_CORE): $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp $(HEADERS) | $(BUILD_DIR)
+$(EMBEDDED): $(RUNTIME_SRCS) tools/embed_runtime.sh | $(BUILD_DIR)
+	bash tools/embed_runtime.sh $@ $(RUNTIME_SRCS)
+
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp $(HEADERS) $(EMBEDDED) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(BUILD_DIR):
@@ -48,4 +57,9 @@ golden: $(TARGET_CORE)
 golden-verify: $(TARGET_CORE)
 	@bash conformance/run.sh verify
 
-.PHONY: all clean cli install golden golden-verify
+# Unit tests for the extracted runtime fragments (now real, compilable C++).
+runtime-test:
+	$(CXX) $(CXXFLAGS) -o $(BUILD_DIR)/runtime_test conformance/runtime_test.cpp
+	@$(BUILD_DIR)/runtime_test
+
+.PHONY: all clean cli install golden golden-verify runtime-test

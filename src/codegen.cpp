@@ -5,6 +5,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include "../build/embedded_runtime.hpp"  // amalgamated runtime fragments (RT_*)
 
 // Decode escape sequences into their literal characters. Used when emitting raw
 // C++ from `cpp "..."` blocks, where the lexer preserves escapes verbatim but the
@@ -2379,43 +2380,8 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     // route pattern that may contain :params (e.g. /api/leads/:id), filling the
     // captured params map. Query string is ignored. Returns false on method or
     // structural mismatch.
-    ss << "std::vector<std::string> splitPathSegments(const std::string& s) {\n"
-       << "    std::vector<std::string> out;\n"
-       << "    size_t i = 0;\n"
-       << "    while (i < s.size()) {\n"
-       << "        if (s[i] == '/') { i++; continue; }\n"
-       << "        size_t j = s.find('/', i);\n"
-       << "        if (j == std::string::npos) j = s.size();\n"
-       << "        out.push_back(s.substr(i, j - i));\n"
-       << "        i = j;\n"
-       << "    }\n"
-       << "    return out;\n"
-       << "}\n\n"
-       << "bool matchDynamicRoute(const std::string& req, const std::string& method,\n"
-       << "                       const std::string& pattern,\n"
-       << "                       std::map<std::string, std::string>& params) {\n"
-       << "    params.clear();\n"
-       << "    size_t firstLineEnd = req.find('\\n');\n"
-       << "    std::string reqLine = (firstLineEnd == std::string::npos) ? req : req.substr(0, firstLineEnd);\n"
-       << "    size_t sp1 = reqLine.find(' ');\n"
-       << "    if (sp1 == std::string::npos) return false;\n"
-       << "    if (reqLine.substr(0, sp1) != method) return false;\n"
-       << "    size_t sp2 = reqLine.find(' ', sp1 + 1);\n"
-       << "    std::string target = (sp2 == std::string::npos) ? reqLine.substr(sp1 + 1) : reqLine.substr(sp1 + 1, sp2 - sp1 - 1);\n"
-       << "    size_t qPos = target.find('?');\n"
-       << "    if (qPos != std::string::npos) target = target.substr(0, qPos);\n"
-       << "    std::vector<std::string> pSeg = splitPathSegments(pattern);\n"
-       << "    std::vector<std::string> tSeg = splitPathSegments(target);\n"
-       << "    if (pSeg.size() != tSeg.size()) return false;\n"
-       << "    for (size_t i = 0; i < pSeg.size(); ++i) {\n"
-       << "        if (!pSeg[i].empty() && pSeg[i][0] == ':') {\n"
-       << "            params[pSeg[i].substr(1)] = tSeg[i];\n"
-       << "        } else if (pSeg[i] != tSeg[i]) {\n"
-       << "            return false;\n"
-       << "        }\n"
-       << "    }\n"
-       << "    return true;\n"
-       << "}\n\n";
+    // Source of truth: src/runtime/router.hpp (real C++), amalgamated into RT_ROUTER.
+    ss << RT_ROUTER << "\n";
 
 
     // Global environment loader and helpers
