@@ -1099,72 +1099,61 @@ void initDatabase() {
     // No init needed for JSONL
 }
 
-class Plan {
-public:
-    int id;
-    std::string titulo;
+// Persistence behind a Storage strategy. Generated slice code delegates here
+// instead of inlining a backend-specific body per method. JSONL is implemented;
+// SQL backends are migrated in follow-ups. Depends on getQueryParam/getJSONVal/
+// safeStoi (defined earlier in the generated translation unit).
+struct ColumnSpec {
+    const char* name;
+    char type; // 's' = string (JSON-quoted); anything else written raw (int/float/bool)
+};
 
-    std::map<std::string, std::string> validateChangeset() {
-        std::map<std::string, std::string> errors;
-        return errors;
-    }
+struct Storage {
+    virtual ~Storage() {}
+    virtual void insert(const std::string& table, const std::vector<ColumnSpec>& cols, const std::vector<std::string>& values) = 0;
+    virtual std::string selectAllJson(const std::string& table, const std::vector<ColumnSpec>& cols, const std::string& req) = 0;
+    virtual void deleteWhere(const std::string& table, const std::string& key, const std::string& value) = 0;
+};
 
-    void saveJSONL() {
-        std::ofstream outfile("db_Plan.jsonl", std::ios::app);
-        if (outfile.is_open()) {
-            outfile << "{";
-            outfile << "\"id\":";
-            outfile << id;
-            outfile << ",";
-            outfile << "\"titulo\":";
-            outfile << "\"" << titulo << "\"";
-            outfile << "}\n";
-            outfile.close();
+struct JsonlStorage : Storage {
+    static std::string filePath(const std::string& table) { return "db_" + table + ".jsonl"; }
+
+    void insert(const std::string& table, const std::vector<ColumnSpec>& cols, const std::vector<std::string>& values) override {
+        std::ofstream outfile(filePath(table), std::ios::app);
+        if (!outfile.is_open()) return;
+        outfile << "{";
+        for (size_t i = 0; i < cols.size(); ++i) {
+            outfile << "\"" << cols[i].name << "\":";
+            if (cols[i].type == 's') outfile << "\"" << values[i] << "\"";
+            else outfile << values[i];
+            if (i + 1 < cols.size()) outfile << ",";
         }
+        outfile << "}\n";
     }
 
-    static std::string getAllAsJSON_JSONL(const std::string& req = "") {
-        std::ifstream infile("db_Plan.jsonl");
+    std::string selectAllJson(const std::string& table, const std::vector<ColumnSpec>& cols, const std::string& req) override {
+        std::ifstream infile(filePath(table));
         std::stringstream ss;
         ss << "[";
-        int limitVal = -1;
-        int offsetVal = 0;
+        int limitVal = -1, offsetVal = 0;
         std::string limitStr = getQueryParam(req, "_limit");
-        if (!limitStr.empty()) {
-            limitVal = safeStoi(limitStr, -1);
-        }
+        if (!limitStr.empty()) limitVal = safeStoi(limitStr, -1);
         std::string offsetStr = getQueryParam(req, "_offset");
-        if (!offsetStr.empty()) {
-            offsetVal = safeStoi(offsetStr, 0);
-        }
-        std::string filter_id = getQueryParam(req, "id");
-        std::string filter_titulo = getQueryParam(req, "titulo");
-        int matchedCount = 0;
-        int skipped = 0;
+        if (!offsetStr.empty()) offsetVal = safeStoi(offsetStr, 0);
+        int matchedCount = 0, skipped = 0;
         if (infile.is_open()) {
             std::string line;
             bool first = true;
             while (std::getline(infile, line)) {
                 if (line.empty()) continue;
                 bool matches = true;
-                if (!filter_id.empty()) {
-                    if (getJSONVal(line, "id") != filter_id) {
-                        matches = false;
-                    }
-                }
-                if (!filter_titulo.empty()) {
-                    if (getJSONVal(line, "titulo") != filter_titulo) {
-                        matches = false;
-                    }
+                for (const auto& c : cols) {
+                    std::string f = getQueryParam(req, c.name);
+                    if (!f.empty() && getJSONVal(line, c.name) != f) { matches = false; break; }
                 }
                 if (!matches) continue;
-                if (skipped < offsetVal) {
-                    skipped++;
-                    continue;
-                }
-                if (limitVal >= 0 && matchedCount >= limitVal) {
-                    break;
-                }
+                if (skipped < offsetVal) { skipped++; continue; }
+                if (limitVal >= 0 && matchedCount >= limitVal) break;
                 if (!first) ss << ",";
                 ss << line;
                 first = false;
@@ -1176,26 +1165,53 @@ public:
         return ss.str();
     }
 
-    static void deleteRecord_JSONL(const std::string& key, const std::string& value) {
-        std::ifstream infile("db_Plan.jsonl");
+    void deleteWhere(const std::string& table, const std::string& key, const std::string& value) override {
+        std::ifstream infile(filePath(table));
         std::vector<std::string> lines;
         if (infile.is_open()) {
             std::string line;
             while (std::getline(infile, line)) {
                 if (line.empty()) continue;
-                if (getJSONVal(line, key) != value) {
-                    lines.push_back(line);
-                }
+                if (getJSONVal(line, key) != value) lines.push_back(line);
             }
             infile.close();
         }
-        std::ofstream outfile("db_Plan.jsonl", std::ios::trunc);
+        std::ofstream outfile(filePath(table), std::ios::trunc);
         if (outfile.is_open()) {
-            for (const auto& l : lines) {
-                outfile << l << "\n";
-            }
-            outfile.close();
+            for (const auto& l : lines) outfile << l << "\n";
         }
+    }
+};
+
+// Storage selection. JSONL today; SQL backends will register here as they migrate.
+Storage* getStorage() {
+    static JsonlStorage jsonl;
+    return &jsonl;
+}
+
+class Plan {
+public:
+    int id;
+    std::string titulo;
+
+    std::map<std::string, std::string> validateChangeset() {
+        std::map<std::string, std::string> errors;
+        return errors;
+    }
+
+    void saveJSONL() {
+        static const std::vector<ColumnSpec> _cols = {{"id", 'i'}, {"titulo", 's'}};
+        std::vector<std::string> _vals = {std::to_string(id), titulo};
+        getStorage()->insert("Plan", _cols, _vals);
+    }
+
+    static std::string getAllAsJSON_JSONL(const std::string& req = "") {
+        static const std::vector<ColumnSpec> _cols = {{"id", 'i'}, {"titulo", 's'}};
+        return getStorage()->selectAllJson("Plan", _cols, req);
+    }
+
+    static void deleteRecord_JSONL(const std::string& key, const std::string& value) {
+        getStorage()->deleteWhere("Plan", key, value);
     }
 
     void save() {
@@ -1223,92 +1239,18 @@ public:
     }
 
     void saveJSONL() {
-        std::ofstream outfile("db_Suscripcion.jsonl", std::ios::app);
-        if (outfile.is_open()) {
-            outfile << "{";
-            outfile << "\"id\":";
-            outfile << id;
-            outfile << ",";
-            outfile << "\"plan\":";
-            outfile << plan;
-            outfile << "}\n";
-            outfile.close();
-        }
+        static const std::vector<ColumnSpec> _cols = {{"id", 'i'}, {"plan", 'i'}};
+        std::vector<std::string> _vals = {std::to_string(id), std::to_string(plan)};
+        getStorage()->insert("Suscripcion", _cols, _vals);
     }
 
     static std::string getAllAsJSON_JSONL(const std::string& req = "") {
-        std::ifstream infile("db_Suscripcion.jsonl");
-        std::stringstream ss;
-        ss << "[";
-        int limitVal = -1;
-        int offsetVal = 0;
-        std::string limitStr = getQueryParam(req, "_limit");
-        if (!limitStr.empty()) {
-            limitVal = safeStoi(limitStr, -1);
-        }
-        std::string offsetStr = getQueryParam(req, "_offset");
-        if (!offsetStr.empty()) {
-            offsetVal = safeStoi(offsetStr, 0);
-        }
-        std::string filter_id = getQueryParam(req, "id");
-        std::string filter_plan = getQueryParam(req, "plan");
-        int matchedCount = 0;
-        int skipped = 0;
-        if (infile.is_open()) {
-            std::string line;
-            bool first = true;
-            while (std::getline(infile, line)) {
-                if (line.empty()) continue;
-                bool matches = true;
-                if (!filter_id.empty()) {
-                    if (getJSONVal(line, "id") != filter_id) {
-                        matches = false;
-                    }
-                }
-                if (!filter_plan.empty()) {
-                    if (getJSONVal(line, "plan") != filter_plan) {
-                        matches = false;
-                    }
-                }
-                if (!matches) continue;
-                if (skipped < offsetVal) {
-                    skipped++;
-                    continue;
-                }
-                if (limitVal >= 0 && matchedCount >= limitVal) {
-                    break;
-                }
-                if (!first) ss << ",";
-                ss << line;
-                first = false;
-                matchedCount++;
-            }
-            infile.close();
-        }
-        ss << "]";
-        return ss.str();
+        static const std::vector<ColumnSpec> _cols = {{"id", 'i'}, {"plan", 'i'}};
+        return getStorage()->selectAllJson("Suscripcion", _cols, req);
     }
 
     static void deleteRecord_JSONL(const std::string& key, const std::string& value) {
-        std::ifstream infile("db_Suscripcion.jsonl");
-        std::vector<std::string> lines;
-        if (infile.is_open()) {
-            std::string line;
-            while (std::getline(infile, line)) {
-                if (line.empty()) continue;
-                if (getJSONVal(line, key) != value) {
-                    lines.push_back(line);
-                }
-            }
-            infile.close();
-        }
-        std::ofstream outfile("db_Suscripcion.jsonl", std::ios::trunc);
-        if (outfile.is_open()) {
-            for (const auto& l : lines) {
-                outfile << l << "\n";
-            }
-            outfile.close();
-        }
+        getStorage()->deleteWhere("Suscripcion", key, value);
     }
 
     void save() {

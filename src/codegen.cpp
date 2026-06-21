@@ -257,105 +257,54 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     };
 
     // -------------------------------------------------------------
-    // JSONL Fallbacks
+    // JSONL backend — delegates to the runtime Storage strategy
+    // (src/runtime/storage.hpp) instead of inlining a body per method.
     // -------------------------------------------------------------
+    auto colTypeChar = [](DataType t) -> char {
+        switch (t) {
+            case DataType::STRING: return 's';
+            case DataType::FLOAT: return 'f';
+            case DataType::BOOL: return 'b';
+            default: return 'i'; // int / relation
+        }
+    };
+    auto emitColsInit = [&]() {
+        ss << "        static const std::vector<ColumnSpec> _cols = {";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            ss << "{\"" << slice->fields[i]->name << "\", '" << colTypeChar(slice->fields[i]->type) << "'}";
+            if (i + 1 < slice->fields.size()) ss << ", ";
+        }
+        ss << "};\n";
+    };
+
     // saveJSONL
     ss << "    void saveJSONL() {\n";
-    ss << "        std::ofstream outfile(\"db_" << slice->name << ".jsonl\", std::ios::app);\n";
-    ss << "        if (outfile.is_open()) {\n";
-    ss << "            outfile << \"{\";\n";
+    emitColsInit();
+    ss << "        std::vector<std::string> _vals = {";
     for (size_t i = 0; i < slice->fields.size(); ++i) {
         const auto& field = slice->fields[i];
-        ss << "            outfile << \"\\\"" << field->name << "\\\":\";\n";
         if (field->type == DataType::STRING) {
-            ss << "            outfile << \"\\\"\" << " << field->name << " << \"\\\"\";\n";
+            ss << field->name;
         } else if (field->type == DataType::BOOL) {
-            ss << "            outfile << (" << field->name << " ? \"true\" : \"false\");\n";
+            ss << "(" << field->name << " ? std::string(\"true\") : std::string(\"false\"))";
         } else {
-            ss << "            outfile << " << field->name << ";\n";
+            ss << "std::to_string(" << field->name << ")";
         }
-        if (i + 1 < slice->fields.size()) {
-            ss << "            outfile << \",\";\n";
-        }
+        if (i + 1 < slice->fields.size()) ss << ", ";
     }
-    ss << "            outfile << \"}\\n\";\n";
-    ss << "            outfile.close();\n";
-    ss << "        }\n";
+    ss << "};\n";
+    ss << "        getStorage()->insert(\"" << slice->name << "\", _cols, _vals);\n";
     ss << "    }\n\n";
 
     // getAllAsJSON_JSONL
     ss << "    static std::string getAllAsJSON_JSONL(const std::string& req = \"\") {\n";
-    ss << "        std::ifstream infile(\"db_" << slice->name << ".jsonl\");\n";
-    ss << "        std::stringstream ss;\n";
-    ss << "        ss << \"[\";\n";
-    ss << "        int limitVal = -1;\n";
-    ss << "        int offsetVal = 0;\n";
-    ss << "        std::string limitStr = getQueryParam(req, \"_limit\");\n";
-    ss << "        if (!limitStr.empty()) {\n";
-    ss << "            limitVal = safeStoi(limitStr, -1);\n";
-    ss << "        }\n";
-    ss << "        std::string offsetStr = getQueryParam(req, \"_offset\");\n";
-    ss << "        if (!offsetStr.empty()) {\n";
-    ss << "            offsetVal = safeStoi(offsetStr, 0);\n";
-    ss << "        }\n";
-    for (const auto& field : slice->fields) {
-        ss << "        std::string filter_" << field->name << " = getQueryParam(req, \"" << field->name << "\");\n";
-    }
-    ss << "        int matchedCount = 0;\n";
-    ss << "        int skipped = 0;\n";
-    ss << "        if (infile.is_open()) {\n";
-    ss << "            std::string line;\n";
-    ss << "            bool first = true;\n";
-    ss << "            while (std::getline(infile, line)) {\n";
-    ss << "                if (line.empty()) continue;\n";
-    ss << "                bool matches = true;\n";
-    for (const auto& field : slice->fields) {
-        ss << "                if (!filter_" << field->name << ".empty()) {\n";
-        ss << "                    if (getJSONVal(line, \"" << field->name << "\") != filter_" << field->name << ") {\n";
-        ss << "                        matches = false;\n";
-        ss << "                    }\n";
-        ss << "                }\n";
-    }
-    ss << "                if (!matches) continue;\n";
-    ss << "                if (skipped < offsetVal) {\n";
-    ss << "                    skipped++;\n";
-    ss << "                    continue;\n";
-    ss << "                }\n";
-    ss << "                if (limitVal >= 0 && matchedCount >= limitVal) {\n";
-    ss << "                    break;\n";
-    ss << "                }\n";
-    ss << "                if (!first) ss << \",\";\n";
-    ss << "                ss << line;\n";
-    ss << "                first = false;\n";
-    ss << "                matchedCount++;\n";
-    ss << "            }\n";
-    ss << "            infile.close();\n";
-    ss << "        }\n";
-    ss << "        ss << \"]\";\n";
-    ss << "        return ss.str();\n";
+    emitColsInit();
+    ss << "        return getStorage()->selectAllJson(\"" << slice->name << "\", _cols, req);\n";
     ss << "    }\n\n";
 
     // deleteRecord_JSONL
     ss << "    static void deleteRecord_JSONL(const std::string& key, const std::string& value) {\n";
-    ss << "        std::ifstream infile(\"db_" << slice->name << ".jsonl\");\n";
-    ss << "        std::vector<std::string> lines;\n";
-    ss << "        if (infile.is_open()) {\n";
-    ss << "            std::string line;\n";
-    ss << "            while (std::getline(infile, line)) {\n";
-    ss << "                if (line.empty()) continue;\n";
-    ss << "                if (getJSONVal(line, key) != value) {\n";
-    ss << "                    lines.push_back(line);\n";
-    ss << "                }\n";
-    ss << "            }\n";
-    ss << "            infile.close();\n";
-    ss << "        }\n";
-    ss << "        std::ofstream outfile(\"db_" << slice->name << ".jsonl\", std::ios::trunc);\n";
-    ss << "        if (outfile.is_open()) {\n";
-    ss << "            for (const auto& l : lines) {\n";
-    ss << "                outfile << l << \"\\n\";\n";
-    ss << "            }\n";
-    ss << "            outfile.close();\n";
-    ss << "        }\n";
+    ss << "        getStorage()->deleteWhere(\"" << slice->name << "\", key, value);\n";
     ss << "    }\n\n";
 
     // -------------------------------------------------------------
@@ -3244,6 +3193,11 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "struct Job_" << job->name << ";\n";
     }
     if (!program->jobs.empty()) ss << "\n";
+
+    // Persistence runtime (Storage strategy). Source of truth:
+    // src/runtime/storage.hpp, amalgamated into RT_STORAGE. Emitted before slices
+    // so their generated methods can delegate to getStorage().
+    ss << RT_STORAGE << "\n";
 
     for (const auto& slice : program->slices) {
         ss << generateSlice(slice) << "\n";
