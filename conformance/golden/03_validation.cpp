@@ -1183,11 +1183,11 @@ struct JsonlStorage : Storage {
     }
 };
 
-// Storage selection. JSONL today; SQL backends will register here as they migrate.
-Storage* getStorage() {
-    static JsonlStorage jsonl;
-    return &jsonl;
-}
+// Storage selection. Defaults to JSONL; a SQL backend fragment may swap the
+// active pointer at startup (see storage_sqlite.hpp) — strategy registration.
+JsonlStorage& jsonlStorage() { static JsonlStorage s; return s; }
+Storage*& activeStorage() { static Storage* p = &jsonlStorage(); return p; }
+Storage* getStorage() { return activeStorage(); }
 
 class Cuenta {
 public:

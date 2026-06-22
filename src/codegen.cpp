@@ -312,40 +312,8 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     // -------------------------------------------------------------
     ss << "    void save() {\n";
     if (dbType == "sqlite") {
-        ss << "        sqlite3* db = getSQLiteConn();\n";
-        ss << "        if (!db) {\n";
-        ss << "            saveJSONL();\n";
-        ss << "            return;\n";
-        ss << "        }\n";
-        ss << "        std::string query = \"INSERT INTO \\\"" << slice->name << "\\\" (";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            ss << "\\\"" << slice->fields[i]->name << "\\\"" << (i + 1 < slice->fields.size() ? ", " : "");
-        }
-        ss << ") VALUES (";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            ss << "?" << (i + 1 < slice->fields.size() ? ", " : "");
-        }
-        ss << ");\";\n";
-        ss << "        sqlite3_stmt* stmt;\n";
-        ss << "        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {\n";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            const auto& field = slice->fields[i];
-            if (field->type == DataType::STRING) {
-                ss << "            sqlite3_bind_text(stmt, " << (i + 1) << ", " << field->name << ".c_str(), -1, SQLITE_TRANSIENT);\n";
-            } else if (field->type == DataType::INT || field->type == DataType::RELATION) {
-                ss << "            sqlite3_bind_int(stmt, " << (i + 1) << ", " << field->name << ");\n";
-            } else if (field->type == DataType::FLOAT) {
-                ss << "            sqlite3_bind_double(stmt, " << (i + 1) << ", " << field->name << ");\n";
-            } else if (field->type == DataType::BOOL) {
-                ss << "            sqlite3_bind_int(stmt, " << (i + 1) << ", " << field->name << " ? 1 : 0);\n";
-            }
-        }
-        ss << "            if (sqlite3_step(stmt) != SQLITE_DONE) {\n";
-        ss << "                std::cerr << \"[SQLite] Insert failed\" << std::endl;\n";
-        ss << "            }\n";
-        ss << "            sqlite3_finalize(stmt);\n";
-        ss << "        }\n";
-        ss << "        releaseSQLiteConn(db);\n";
+        // Delegates to the active Storage strategy (SqliteStorage for sqlite builds).
+        ss << "        saveJSONL();\n";
     } else if (dbType == "postgres" || dbType == "postgresql") {
         ss << "        PGconn* conn = getPGConn();\n";
         ss << "        if (!conn) {\n";
@@ -432,82 +400,8 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     // -------------------------------------------------------------
     ss << "    static std::string getAllAsJSON(const std::string& req = \"\") {\n";
     if (dbType == "sqlite") {
-        ss << "        sqlite3* db = getSQLiteConn();\n";
-        ss << "        if (!db) return getAllAsJSON_JSONL(req);\n";
-        ss << "        std::vector<std::pair<std::string, std::string>> filters;\n";
-        for (const auto& field : slice->fields) {
-            ss << "        {\n";
-            ss << "            std::string val = getQueryParam(req, \"" << field->name << "\");\n";
-            ss << "            if (!val.empty()) {\n";
-            if (field->type == DataType::BOOL) {
-                ss << "                if (val == \"true\") val = \"1\";\n";
-                ss << "                else if (val == \"false\") val = \"0\";\n";
-            }
-            ss << "                filters.push_back({\"" << field->name << "\", val});\n";
-            ss << "            }\n";
-            ss << "        }\n";
-        }
-        ss << "        std::string query = \"SELECT * FROM \\\"" << slice->name << "\\\"\";\n";
-        ss << "        if (!filters.empty()) {\n";
-        ss << "            query += \" WHERE \";\n";
-        ss << "            for (size_t i = 0; i < filters.size(); ++i) {\n";
-        ss << "                query += \"\\\"\" + filters[i].first + \"\\\" = ?\";\n";
-        ss << "                if (i + 1 < filters.size()) {\n";
-        ss << "                    query += \" AND \";\n";
-        ss << "                }\n";
-        ss << "            }\n";
-        ss << "        }\n";
-        ss << "        std::string limitStr = getQueryParam(req, \"_limit\");\n";
-        ss << "        std::string offsetStr = getQueryParam(req, \"_offset\");\n";
-        ss << "        if (!limitStr.empty()) {\n";
-        ss << "            query += \" LIMIT ?\";\n";
-        ss << "        }\n";
-        ss << "        if (!offsetStr.empty()) {\n";
-        ss << "            query += \" OFFSET ?\";\n";
-        ss << "        }\n";
-        ss << "        sqlite3_stmt* stmt;\n";
-        ss << "        std::stringstream ss;\n";
-        ss << "        ss << \"[\";\n";
-        ss << "        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {\n";
-        ss << "            int bindIdx = 1;\n";
-        ss << "            for (const auto& f : filters) {\n";
-        ss << "                sqlite3_bind_text(stmt, bindIdx++, f.second.c_str(), -1, SQLITE_TRANSIENT);\n";
-        ss << "            }\n";
-        ss << "            if (!limitStr.empty()) {\n";
-        ss << "                sqlite3_bind_int(stmt, bindIdx++, safeStoi(limitStr));\n";
-        ss << "            }\n";
-        ss << "            if (!offsetStr.empty()) {\n";
-        ss << "                sqlite3_bind_int(stmt, bindIdx++, safeStoi(offsetStr));\n";
-        ss << "            }\n";
-        ss << "            bool first = true;\n";
-        ss << "            while (sqlite3_step(stmt) == SQLITE_ROW) {\n";
-        ss << "                if (!first) ss << \",\";\n";
-        ss << "                ss << \"{\";\n";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            const auto& field = slice->fields[i];
-            ss << "                ss << \"\\\"" << field->name << "\\\":\";\n";
-            int colIdx = i + 1; // 0 is id
-            if (field->type == DataType::STRING) {
-                ss << "                ss << \"\\\"\" << sqlite3_column_text(stmt, " << colIdx << ") << \"\\\"\";\n";
-            } else if (field->type == DataType::INT || field->type == DataType::RELATION) {
-                ss << "                ss << sqlite3_column_int(stmt, " << colIdx << ");\n";
-            } else if (field->type == DataType::FLOAT) {
-                ss << "                ss << sqlite3_column_double(stmt, " << colIdx << ");\n";
-            } else if (field->type == DataType::BOOL) {
-                ss << "                ss << (sqlite3_column_int(stmt, " << colIdx << ") ? \"true\" : \"false\");\n";
-            }
-            if (i + 1 < slice->fields.size()) {
-                ss << "                ss << \",\";\n";
-            }
-        }
-        ss << "                ss << \"}\";\n";
-        ss << "                first = false;\n";
-        ss << "            }\n";
-        ss << "            sqlite3_finalize(stmt);\n";
-        ss << "        }\n";
-        ss << "        ss << \"]\";\n";
-        ss << "        releaseSQLiteConn(db);\n";
-        ss << "        return ss.str();\n";
+        // Delegates to the active Storage strategy (SqliteStorage for sqlite builds).
+        ss << "        return getAllAsJSON_JSONL(req);\n";
     } else if (dbType == "postgres" || dbType == "postgresql") {
         ss << "        PGconn* conn = getPGConn();\n";
         ss << "        if (!conn) return getAllAsJSON_JSONL(req);\n";
@@ -676,19 +570,8 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
 
     ss << "    static void deleteRecord(const std::string& key, const std::string& value) {\n";
     if (dbType == "sqlite") {
-        ss << "        sqlite3* db = getSQLiteConn();\n";
-        ss << "        if (!db) {\n";
-        ss << "            deleteRecord_JSONL(key, value);\n";
-        ss << "            return;\n";
-        ss << "        }\n";
-        ss << "        std::string query = \"DELETE FROM \\\"" << slice->name << "\\\" WHERE \\\"\" + key + \"\\\" = ?;\";\n";
-        ss << "        sqlite3_stmt* stmt;\n";
-        ss << "        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {\n";
-        ss << "            sqlite3_bind_text(stmt, 1, value.c_str(), -1, SQLITE_TRANSIENT);\n";
-        ss << "            sqlite3_step(stmt);\n";
-        ss << "            sqlite3_finalize(stmt);\n";
-        ss << "        }\n";
-        ss << "        releaseSQLiteConn(db);\n";
+        // Delegates to the active Storage strategy (SqliteStorage for sqlite builds).
+        ss << "        deleteRecord_JSONL(key, value);\n";
     } else if (dbType == "postgres" || dbType == "postgresql") {
         ss << "        PGconn* conn = getPGConn();\n";
         ss << "        if (!conn) {\n";
@@ -3198,6 +3081,10 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     // src/runtime/storage.hpp, amalgamated into RT_STORAGE. Emitted before slices
     // so their generated methods can delegate to getStorage().
     ss << RT_STORAGE << "\n";
+    // SQLite backend registers itself as the active storage (sqlite builds only).
+    if (program->dbType == "sqlite") {
+        ss << RT_STORAGE_SQLITE << "\n";
+    }
 
     for (const auto& slice : program->slices) {
         ss << generateSlice(slice) << "\n";
