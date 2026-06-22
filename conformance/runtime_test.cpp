@@ -7,6 +7,7 @@
 #include <iostream>
 
 #include "../src/runtime/router.hpp"
+#include "../src/code_writer.hpp"
 
 static int failures = 0;
 #define CHECK(cond) do { if (!(cond)) { std::cerr << "FAIL: " #cond " (line " << __LINE__ << ")\n"; ++failures; } } while (0)
@@ -34,6 +35,19 @@ int main() {
 
     // segment-count mismatch (no greedy substring shadowing)
     CHECK(!matchDynamicRoute("GET /api/leads/42 HTTP/1.1\r\n", "GET", "/", p));
+
+    // CodeWriter: quoting escapes (no hand-written \" or \\n)
+    CHECK(CodeWriter::quote("hi") == "\"hi\"");
+    CHECK(CodeWriter::quote("a\"b") == "\"a\\\"b\"");
+    CHECK(CodeWriter::quote("x\ny") == "\"x\\ny\"");
+    CHECK(CodeWriter::quote("c:\\path") == "\"c:\\\\path\"");
+
+    // CodeWriter: indentation
+    {
+        CodeWriter cw;
+        cw.line("a").push().line("b").pop().line("c");
+        CHECK(cw.str() == "a\n    b\nc\n");
+    }
 
     if (failures == 0) {
         std::cout << "runtime_test: all checks passed\n";
