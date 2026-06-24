@@ -2608,16 +2608,18 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                         }
                     } else if (actionName == "getAllAsJSON" || actionName == "getAllAsJSON_JSONL") {
                         // Static read method — return JSON directly, skip validation/save
-                        ss << "                std::string _jsonResult = " << sliceName << "::getAllAsJSON(req);\n";
-                        ss << "                std::stringstream resp;\n";
-                        ss << "                resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
-                        ss << "                     << \"Content-Type: application/json\\r\\n\"\n";
-                        ss << "                     << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
-                        ss << "                     << \"Content-Length: \" << _jsonResult.length() << \"\\r\\n\\r\\n\"\n";
-                        ss << "                     << _jsonResult;\n";
-                        ss << "                send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
-                        ss << "                close(client_fd);\n";
-                        ss << "                co_return;\n";
+                        ss << "                {\n";
+                        ss << "                    std::string _jr = " << sliceName << "::getAllAsJSON(req);\n";
+                        ss << "                    std::stringstream _gr;\n";
+                        ss << "                    _gr << \"HTTP/1.1 200 OK\\r\\n\"\n";
+                        ss << "                        << \"Content-Type: application/json\\r\\n\"\n";
+                        ss << "                        << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+                        ss << "                        << \"Content-Length: \" << _jr.length() << \"\\r\\n\\r\\n\"\n";
+                        ss << "                        << _jr;\n";
+                        ss << "                    send(client_fd, _gr.str().c_str(), _gr.str().length(), 0);\n";
+                        ss << "                    close(client_fd);\n";
+                        ss << "                    co_return;\n";
+                        ss << "                }\n";
                     } else {
                         ss << "                " << sliceName << " instance;\n";
                         for (const auto& slice : program->slices) {
