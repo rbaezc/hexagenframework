@@ -947,7 +947,7 @@ int main(int argc, char* argv[]) {
             auto startServer = [&]() {
                 std::string dbFlags = "";
                 if (currentDbType == "sqlite") dbFlags = " -lsqlite3";
-                else if (currentDbType == "postgres" || currentDbType == "postgresql") dbFlags = " -lpq";
+                else if (currentDbType == "postgres" || currentDbType == "postgresql") dbFlags = " -lpq -I/usr/include/postgresql -I/usr/local/include/postgresql";
                 else if (currentDbType == "mysql") dbFlags = " -lmysqlclient";
 
                 std::string desktopFlags = "";
@@ -1172,7 +1172,7 @@ int main(int argc, char* argv[]) {
 
             std::string dbFlags = "";
             if (program->dbType == "sqlite") dbFlags = " -lsqlite3";
-            else if (program->dbType == "postgres" || program->dbType == "postgresql") dbFlags = " -lpq";
+            else if (program->dbType == "postgres" || program->dbType == "postgresql") dbFlags = " -lpq -I/usr/include/postgresql -I/usr/local/include/postgresql";
             else if (program->dbType == "mysql") dbFlags = " -lmysqlclient";
 
             std::string desktopFlags = "";
