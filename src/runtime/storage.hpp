@@ -12,6 +12,7 @@ struct Storage {
     virtual void insert(const std::string& table, const std::vector<ColumnSpec>& cols, const std::vector<std::string>& values) = 0;
     virtual std::string selectAllJson(const std::string& table, const std::vector<ColumnSpec>& cols, const std::string& req) = 0;
     virtual void deleteWhere(const std::string& table, const std::string& key, const std::string& value) = 0;
+    virtual void updateWhere(const std::string& table, const std::vector<ColumnSpec>& cols, const std::vector<std::string>& values, const std::string& key, const std::string& keyValue) = 0;
 };
 
 struct JsonlStorage : Storage {
@@ -72,6 +73,35 @@ struct JsonlStorage : Storage {
             while (std::getline(infile, line)) {
                 if (line.empty()) continue;
                 if (getJSONVal(line, key) != value) lines.push_back(line);
+            }
+            infile.close();
+        }
+        std::ofstream outfile(filePath(table), std::ios::trunc);
+        if (outfile.is_open()) {
+            for (const auto& l : lines) outfile << l << "\n";
+        }
+    }
+
+    void updateWhere(const std::string& table, const std::vector<ColumnSpec>& cols, const std::vector<std::string>& values, const std::string& key, const std::string& keyValue) override {
+        std::ifstream infile(filePath(table));
+        std::vector<std::string> lines;
+        if (infile.is_open()) {
+            std::string line;
+            while (std::getline(infile, line)) {
+                if (line.empty()) continue;
+                if (getJSONVal(line, key) == keyValue) {
+                    std::string updated = "{";
+                    for (size_t i = 0; i < cols.size(); ++i) {
+                        updated += "\"" + std::string(cols[i].name) + "\":";
+                        if (cols[i].type == 's') updated += "\"" + values[i] + "\"";
+                        else updated += values[i];
+                        if (i + 1 < cols.size()) updated += ",";
+                    }
+                    updated += "}";
+                    lines.push_back(updated);
+                } else {
+                    lines.push_back(line);
+                }
             }
             infile.close();
         }

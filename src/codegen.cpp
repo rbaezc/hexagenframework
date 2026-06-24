@@ -307,307 +307,38 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     ss << "        getStorage()->deleteWhere(\"" << slice->name << "\", key, value);\n";
     ss << "    }\n\n";
 
+    // updateRecord_JSONL — delegates to Storage::updateWhere()
+    ss << "    static void updateRecord_JSONL(const std::string& key, const std::string& keyValue,\n";
+    ss << "                                   const std::vector<ColumnSpec>& cols, const std::vector<std::string>& vals) {\n";
+    ss << "        getStorage()->updateWhere(\"" << slice->name << "\", cols, vals, key, keyValue);\n";
+    ss << "    }\n\n";
+
     // -------------------------------------------------------------
     // save() Method
     // -------------------------------------------------------------
     ss << "    void save() {\n";
-    if (dbType == "sqlite") {
-        // Delegates to the active Storage strategy (SqliteStorage for sqlite builds).
-        ss << "        saveJSONL();\n";
-    } else if (dbType == "postgres" || dbType == "postgresql") {
-        ss << "        PGconn* conn = getPGConn();\n";
-        ss << "        if (!conn) {\n";
-        ss << "            saveJSONL();\n";
-        ss << "            return;\n";
-        ss << "        }\n";
-        ss << "        const char* paramValues[" << slice->fields.size() << "];\n";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            const auto& field = slice->fields[i];
-            if (field->type == DataType::STRING) {
-                ss << "        paramValues[" << i << "] = " << field->name << ".c_str();\n";
-            } else {
-                ss << "        std::string param_" << field->name << " = std::to_string(" << field->name << ");\n";
-                ss << "        paramValues[" << i << "] = param_" << field->name << ".c_str();\n";
-            }
-        }
-        ss << "        std::string query = \"INSERT INTO \\\"" << slice->name << "\\\" (";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            ss << "\\\"" << slice->fields[i]->name << "\\\"" << (i + 1 < slice->fields.size() ? ", " : "");
-        }
-        ss << ") VALUES (";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            ss << "$" << (i + 1) << (i + 1 < slice->fields.size() ? ", " : "");
-        }
-        ss << ");\";\n";
-        ss << "        PGresult* res = PQexecParams(conn, query.c_str(), " << slice->fields.size() << ", NULL, paramValues, NULL, NULL, 0);\n";
-        ss << "        if (PQresultStatus(res) != PGRES_COMMAND_OK) {\n";
-        ss << "            std::cerr << \"[PostgreSQL] Insert failed: \" << PQerrorMessage(conn) << std::endl;\n";
-        ss << "        }\n";
-        ss << "        PQclear(res);\n";
-        ss << "        releasePGConn(conn);\n";
-    } else if (dbType == "mysql") {
-        ss << "        MYSQL* conn = getMySQLConn();\n";
-        ss << "        if (!conn) {\n";
-        ss << "            saveJSONL();\n";
-        ss << "            return;\n";
-        ss << "        }\n";
-        ss << "        MYSQL_STMT* stmt = mysql_stmt_init(conn);\n";
-        ss << "        if (stmt) {\n";
-        ss << "            std::string query = \"INSERT INTO `" << slice->name << "` (";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            ss << "`" << slice->fields[i]->name << "`" << (i + 1 < slice->fields.size() ? ", " : "");
-        }
-        ss << ") VALUES (";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            ss << "?" << (i + 1 < slice->fields.size() ? ", " : "");
-        }
-        ss << ")\";\n";
-        ss << "            if (mysql_stmt_prepare(stmt, query.c_str(), query.length()) == 0) {\n";
-        ss << "                MYSQL_BIND bind[" << slice->fields.size() << "];\n";
-        ss << "                std::memset(bind, 0, sizeof(bind));\n";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            const auto& field = slice->fields[i];
-            if (field->type == DataType::STRING) {
-                ss << "                bind[" << i << "].buffer_type = MYSQL_TYPE_STRING;\n";
-                ss << "                bind[" << i << "].buffer = (char*)" << field->name << ".c_str();\n";
-                ss << "                bind[" << i << "].buffer_length = " << field->name << ".length();\n";
-            } else if (field->type == DataType::INT || field->type == DataType::RELATION) {
-                ss << "                bind[" << i << "].buffer_type = MYSQL_TYPE_LONG;\n";
-                ss << "                bind[" << i << "].buffer = &" << field->name << ";\n";
-            } else if (field->type == DataType::FLOAT) {
-                ss << "                bind[" << i << "].buffer_type = MYSQL_TYPE_DOUBLE;\n";
-                ss << "                bind[" << i << "].buffer = &" << field->name << ";\n";
-            } else if (field->type == DataType::BOOL) {
-                ss << "                bind[" << i << "].buffer_type = MYSQL_TYPE_TINY;\n";
-                ss << "                bind[" << i << "].buffer = &" << field->name << ";\n";
-            }
-        }
-        ss << "                mysql_stmt_bind_param(stmt, bind);\n";
-        ss << "                if (mysql_stmt_execute(stmt) != 0) {\n";
-        ss << "                    std::cerr << \"[MySQL] Insert failed: \" << mysql_stmt_error(stmt) << std::endl;\n";
-        ss << "                }\n";
-        ss << "                mysql_stmt_close(stmt);\n";
-        ss << "            }\n";
-        ss << "        }\n";
-        ss << "        releaseMySQLConn(conn);\n";
-    } else {
-        ss << "        saveJSONL();\n";
-    }
+    // All backends delegate to saveJSONL() which calls getStorage()->insert().
+    // The active Storage strategy (JsonlStorage/SqliteStorage/PostgresStorage/MySQLStorage)
+    // is registered at startup via the static registrar in the emitted storage header.
+    ss << "        saveJSONL();\n";
     ss << "    }\n\n";
 
     // -------------------------------------------------------------
     // getAllAsJSON() Method
     // -------------------------------------------------------------
     ss << "    static std::string getAllAsJSON(const std::string& req = \"\") {\n";
-    if (dbType == "sqlite") {
-        // Delegates to the active Storage strategy (SqliteStorage for sqlite builds).
-        ss << "        return getAllAsJSON_JSONL(req);\n";
-    } else if (dbType == "postgres" || dbType == "postgresql") {
-        ss << "        PGconn* conn = getPGConn();\n";
-        ss << "        if (!conn) return getAllAsJSON_JSONL(req);\n";
-        ss << "        std::vector<std::string> paramValues;\n";
-        ss << "        std::string query = \"SELECT * FROM \\\"" << slice->name << "\\\"\";\n";
-        for (const auto& field : slice->fields) {
-            ss << "        {\n";
-            ss << "            std::string val = getQueryParam(req, \"" << field->name << "\");\n";
-            ss << "            if (!val.empty()) {\n";
-            ss << "                paramValues.push_back(val);\n";
-            ss << "                if (query.find(\" WHERE \") == std::string::npos) {\n";
-            ss << "                    query += \" WHERE \";\n";
-            ss << "                } else {\n";
-            ss << "                    query += \" AND \";\n";
-            ss << "                }\n";
-            ss << "                query += \"\\\"" << field->name << "\\\" = $\" + std::to_string(paramValues.size());\n";
-            if (field->type == DataType::INT || field->type == DataType::RELATION) {
-                ss << "                query += \"::int\";\n";
-            } else if (field->type == DataType::FLOAT) {
-                ss << "                query += \"::float\";\n";
-            } else if (field->type == DataType::BOOL) {
-                ss << "                query += \"::boolean\";\n";
-            }
-            ss << "            }\n";
-            ss << "        }\n";
-        }
-        ss << "        std::string limitStr = getQueryParam(req, \"_limit\");\n";
-        ss << "        std::string offsetStr = getQueryParam(req, \"_offset\");\n";
-        ss << "        if (!limitStr.empty()) {\n";
-        ss << "            paramValues.push_back(limitStr);\n";
-        ss << "            query += \" LIMIT $\" + std::to_string(paramValues.size()) + \"::int\";\n";
-        ss << "        }\n";
-        ss << "        if (!offsetStr.empty()) {\n";
-        ss << "            paramValues.push_back(offsetStr);\n";
-        ss << "            query += \" OFFSET $\" + std::to_string(paramValues.size()) + \"::int\";\n";
-        ss << "        }\n";
-        ss << "        std::vector<const char*> c_params;\n";
-        ss << "        for (const auto& p : paramValues) {\n";
-        ss << "            c_params.push_back(p.c_str());\n";
-        ss << "        }\n";
-        ss << "        PGresult* res = PQexecParams(conn, query.c_str(), c_params.size(), NULL, c_params.empty() ? NULL : c_params.data(), NULL, NULL, 0);\n";
-        ss << "        if (PQresultStatus(res) != PGRES_TUPLES_OK) {\n";
-        ss << "            PQclear(res);\n";
-        ss << "            releasePGConn(conn);\n";
-        ss << "            return getAllAsJSON_JSONL(req);\n";
-        ss << "        }\n";
-        ss << "        int rows = PQntuples(res);\n";
-        ss << "        std::stringstream ss;\n";
-        ss << "        ss << \"[\";\n";
-        ss << "        for (int i = 0; i < rows; ++i) {\n";
-        ss << "            if (i > 0) ss << \",\";\n";
-        ss << "            ss << \"{\";\n";
-        for (size_t fIdx = 0; fIdx < slice->fields.size(); ++fIdx) {
-            const auto& field = slice->fields[fIdx];
-            ss << "            {\n";
-            ss << "                int colIdx = PQfnumber(res, \"" << field->name << "\");\n";
-            ss << "                ss << \"\\\"" << field->name << "\\\":\";\n";
-            ss << "                if (PQgetisnull(res, i, colIdx)) {\n";
-            ss << "                    ss << \"null\";\n";
-            ss << "                } else {\n";
-            ss << "                    std::string val = PQgetvalue(res, i, colIdx);\n";
-            if (field->type == DataType::STRING) {
-                ss << "                    ss << \"\\\"\" << val << \"\\\"\";\n";
-            } else if (field->type == DataType::BOOL) {
-                ss << "                    ss << (val == \"t\" || val == \"true\" || val == \"1\" ? \"true\" : \"false\");\n";
-            } else {
-                ss << "                    ss << val;\n";
-            }
-            ss << "                }\n";
-            ss << "            }\n";
-            if (fIdx + 1 < slice->fields.size()) {
-                ss << "            ss << \",\";\n";
-            }
-        }
-        ss << "            ss << \"}\";\n";
-        ss << "        }\n";
-        ss << "        ss << \"]\";\n";
-        ss << "        PQclear(res);\n";
-        ss << "        releasePGConn(conn);\n";
-        ss << "        return ss.str();\n";
-    } else if (dbType == "mysql") {
-        ss << "        MYSQL* conn = getMySQLConn();\n";
-        ss << "        if (!conn) return getAllAsJSON_JSONL(req);\n";
-        ss << "        std::string query = \"SELECT * FROM `" << slice->name << "`\";\n";
-        for (const auto& field : slice->fields) {
-            ss << "        {\n";
-            ss << "            std::string val = getQueryParam(req, \"" << field->name << "\");\n";
-            ss << "            if (!val.empty()) {\n";
-            ss << "                if (query.find(\" WHERE \") == std::string::npos) {\n";
-            ss << "                    query += \" WHERE \";\n";
-            ss << "                } else {\n";
-            ss << "                    query += \" AND \";\n";
-            ss << "                }\n";
-            if (field->type == DataType::INT || field->type == DataType::RELATION) {
-                ss << "                query += \"`" << field->name << "` = \" + std::to_string(safeStoi(val));\n";
-            } else if (field->type == DataType::BOOL) {
-                ss << "                query += \"`" << field->name << "` = \" + std::to_string(val == \"true\" || val == \"1\" ? 1 : 0);\n";
-            } else if (field->type == DataType::FLOAT) {
-                ss << "                query += \"`" << field->name << "` = \" + std::to_string(safeStod(val));\n";
-            } else {
-                ss << "                char* escaped = new char[val.length() * 2 + 1];\n";
-                ss << "                mysql_real_escape_string(conn, escaped, val.c_str(), val.length());\n";
-                ss << "                query += \"`" << field->name << "` = '\" + std::string(escaped) + \"'\";\n";
-                ss << "                delete[] escaped;\n";
-            }
-            ss << "            }\n";
-            ss << "        }\n";
-        }
-        ss << "        std::string limitStr = getQueryParam(req, \"_limit\");\n";
-        ss << "        std::string offsetStr = getQueryParam(req, \"_offset\");\n";
-        ss << "        if (!limitStr.empty()) {\n";
-        ss << "            query += \" LIMIT \" + std::to_string(safeStoi(limitStr));\n";
-        ss << "        }\n";
-        ss << "        if (!offsetStr.empty()) {\n";
-        ss << "            query += \" OFFSET \" + std::to_string(safeStoi(offsetStr));\n";
-        ss << "        }\n";
-        ss << "        std::stringstream ss;\n";
-        ss << "        ss << \"[\";\n";
-        ss << "        if (mysql_query(conn, query.c_str()) == 0) {\n";
-        ss << "            MYSQL_RES* result = mysql_store_result(conn);\n";
-        ss << "            if (result) {\n";
-        ss << "                int num_fields = mysql_num_fields(result);\n";
-        ss << "                MYSQL_FIELD* fields = mysql_fetch_fields(result);\n";
-        ss << "                MYSQL_ROW row;\n";
-        ss << "                bool firstRow = true;\n";
-        ss << "                while ((row = mysql_fetch_row(result))) {\n";
-        ss << "                    if (!firstRow) ss << \",\";\n";
-        ss << "                    ss << \"{\";\n";
-        for (size_t fIdx = 0; fIdx < slice->fields.size(); ++fIdx) {
-            const auto& field = slice->fields[fIdx];
-            ss << "                    {\n";
-            ss << "                        int colIdx = -1;\n";
-            ss << "                        for (int k = 0; k < num_fields; ++k) {\n";
-            ss << "                            if (std::string(fields[k].name) == \"" << field->name << "\") { colIdx = k; break; }\n";
-            ss << "                        }\n";
-            ss << "                        ss << \"\\\"" << field->name << "\\\":\";\n";
-            ss << "                        if (colIdx == -1 || row[colIdx] == nullptr) {\n";
-            ss << "                            ss << \"null\";\n";
-            ss << "                        } else {\n";
-            if (field->type == DataType::STRING) {
-                ss << "                            ss << \"\\\"\" << row[colIdx] << \"\\\"\";\n";
-            } else if (field->type == DataType::BOOL) {
-                ss << "                            ss << (std::string(row[colIdx]) == \"1\" || std::string(row[colIdx]) == \"true\" ? \"true\" : \"false\");\n";
-            } else {
-                ss << "                            ss << row[colIdx];\n";
-            }
-            ss << "                        }\n";
-            ss << "                    }\n";
-            if (fIdx + 1 < slice->fields.size()) {
-                ss << "                    ss << \",\";\n";
-            }
-        }
-        ss << "                    ss << \"}\";\n";
-        ss << "                    firstRow = false;\n";
-        ss << "                }\n";
-        ss << "                mysql_free_result(result);\n";
-        ss << "            }\n";
-        ss << "        }\n";
-        ss << "        ss << \"]\";\n";
-        ss << "        releaseMySQLConn(conn);\n";
-        ss << "        return ss.str();\n";
-    } else {
-        ss << "        return getAllAsJSON_JSONL(req);\n";
-    }
+    // All backends delegate to getAllAsJSON_JSONL which calls getStorage()->selectAllJson().
+    ss << "        return getAllAsJSON_JSONL(req);\n";
     ss << "    }\n\n";
 
     ss << "    static void deleteRecord(const std::string& key, const std::string& value) {\n";
-    if (dbType == "sqlite") {
-        // Delegates to the active Storage strategy (SqliteStorage for sqlite builds).
-        ss << "        deleteRecord_JSONL(key, value);\n";
-    } else if (dbType == "postgres" || dbType == "postgresql") {
-        ss << "        PGconn* conn = getPGConn();\n";
-        ss << "        if (!conn) {\n";
-        ss << "            deleteRecord_JSONL(key, value);\n";
-        ss << "            return;\n";
-        ss << "        }\n";
-        ss << "        const char* paramValues[1];\n";
-        ss << "        paramValues[0] = value.c_str();\n";
-        ss << "        std::string query = \"DELETE FROM \\\"" << slice->name << "\\\" WHERE \\\"\" + key + \"\\\" = $1;\";\n";
-        ss << "        PGresult* res = PQexecParams(conn, query.c_str(), 1, NULL, paramValues, NULL, NULL, 0);\n";
-        ss << "        PQclear(res);\n";
-        ss << "        releasePGConn(conn);\n";
-    } else if (dbType == "mysql") {
-        ss << "        MYSQL* conn = getMySQLConn();\n";
-        ss << "        if (!conn) {\n";
-        ss << "            deleteRecord_JSONL(key, value);\n";
-        ss << "            return;\n";
-        ss << "        }\n";
-        ss << "        MYSQL_STMT* stmt = mysql_stmt_init(conn);\n";
-        ss << "        if (stmt) {\n";
-        ss << "            std::string query = \"DELETE FROM `" << slice->name << "` WHERE `\" + key + \"` = ?\";\n";
-        ss << "            if (mysql_stmt_prepare(stmt, query.c_str(), query.length()) == 0) {\n";
-        ss << "                MYSQL_BIND bind[1];\n";
-        ss << "                std::memset(bind, 0, sizeof(bind));\n";
-        ss << "                bind[0].buffer_type = MYSQL_TYPE_STRING;\n";
-        ss << "                bind[0].buffer = (char*)value.c_str();\n";
-        ss << "                bind[0].buffer_length = value.length();\n";
-        ss << "                mysql_stmt_bind_param(stmt, bind);\n";
-        ss << "                mysql_stmt_execute(stmt);\n";
-        ss << "                mysql_stmt_close(stmt);\n";
-        ss << "            }\n";
-        ss << "        }\n";
-        ss << "        releaseMySQLConn(conn);\n";
-    } else {
-        ss << "        deleteRecord_JSONL(key, value);\n";
-    }
+    // All backends delegate to deleteRecord_JSONL which calls getStorage()->deleteWhere().
+    ss << "        deleteRecord_JSONL(key, value);\n";
+    ss << "    }\n\n";
+
+    ss << "    static void updateRecord(const std::string& key, const std::string& keyValue,\n";
+    ss << "                             const std::vector<ColumnSpec>& cols, const std::vector<std::string>& vals) {\n";
+    ss << "        updateRecord_JSONL(key, keyValue, cols, vals);\n";
     ss << "    }\n\n";
 
     // Inject findUser/findUser_JSONL if slice is Usuario or User
@@ -2142,9 +1873,12 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     // src/runtime/storage.hpp, amalgamated into RT_STORAGE. Emitted before slices
     // so their generated methods can delegate to getStorage().
     ss << RT_STORAGE << "\n";
-    // SQLite backend registers itself as the active storage (sqlite builds only).
     if (program->dbType == "sqlite") {
         ss << RT_STORAGE_SQLITE << "\n";
+    } else if (program->dbType == "postgres" || program->dbType == "postgresql") {
+        ss << RT_STORAGE_POSTGRES << "\n";
+    } else if (program->dbType == "mysql" || program->dbType == "mariadb") {
+        ss << RT_STORAGE_MYSQL << "\n";
     }
 
     for (const auto& slice : program->slices) {

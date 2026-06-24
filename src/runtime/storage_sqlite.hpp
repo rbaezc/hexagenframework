@@ -98,6 +98,34 @@ struct SqliteStorage : Storage {
         }
         releaseSQLiteConn(db);
     }
+
+    void updateWhere(const std::string& table, const std::vector<ColumnSpec>& cols, const std::vector<std::string>& values, const std::string& key, const std::string& keyValue) override {
+        sqlite3* db = getSQLiteConn();
+        if (!db) { fallback.updateWhere(table, cols, values, key, keyValue); return; }
+        std::string query = "UPDATE \"" + table + "\" SET ";
+        for (size_t i = 0; i < cols.size(); ++i) {
+            query += "\"" + std::string(cols[i].name) + "\" = ?";
+            if (i + 1 < cols.size()) query += ", ";
+        }
+        query += " WHERE \"" + key + "\" = ?;";
+        sqlite3_stmt* stmt;
+        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+            for (size_t i = 0; i < cols.size(); ++i) {
+                int idx = (int)i + 1;
+                switch (cols[i].type) {
+                    case 's': sqlite3_bind_text(stmt, idx, values[i].c_str(), -1, SQLITE_TRANSIENT); break;
+                    case 'b': sqlite3_bind_int(stmt, idx, (values[i] == "true" || values[i] == "1") ? 1 : 0); break;
+                    case 'f': sqlite3_bind_double(stmt, idx, atof(values[i].c_str())); break;
+                    default:  sqlite3_bind_int(stmt, idx, atoi(values[i].c_str())); break;
+                }
+            }
+            sqlite3_bind_text(stmt, (int)cols.size() + 1, keyValue.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) != SQLITE_DONE)
+                std::cerr << "[SQLite] Update failed" << std::endl;
+            sqlite3_finalize(stmt);
+        }
+        releaseSQLiteConn(db);
+    }
 };
 
 SqliteStorage& sqliteStorage() { static SqliteStorage s; return s; }
