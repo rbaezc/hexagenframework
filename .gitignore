@@ -8,9 +8,22 @@ temp_hexagen_run
 build/
 *.o
 
+# Binarios de prueba
+test_desktop_app
+test_smtp_app
+fullstack_engine/core_server
+
 # Bases de datos locales
 *.jsonl
+*.db
 
 # Directorios de pruebas locales
 mi_app/
 temp_codegen.cpp
+
+# Archivos generados externamente
+webview.h
+
+# VS Code extension artifacts
+vscode-extension/out/
+vscode-extension/*.vsix

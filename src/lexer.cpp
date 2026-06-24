@@ -120,6 +120,16 @@ std::vector<Token> Lexer::tokenize() {
             advance(); // consume open quote
             std::string strVal = "";
             while (peek() != '"' && peek() != '\0') {
+                // Preserve escape sequences verbatim (e.g. \" \' \\ \n \t) so the
+                // closing quote is not detected prematurely and the generated C++
+                // string literal stays valid.
+                if (peek() == '\\') {
+                    strVal += advance();          // copy the backslash
+                    if (peek() != '\0') {
+                        strVal += advance();      // copy the escaped char (incl. a quote)
+                    }
+                    continue;
+                }
                 strVal += advance();
             }
             if (peek() == '"') {
@@ -182,6 +192,7 @@ std::vector<Token> Lexer::tokenize() {
             else if (ident == "enqueue") type = TokenType::ENQUEUE;
             else if (ident == "use") type = TokenType::USE;
             else if (ident == "cpp") type = TokenType::CPP;
+            else if (ident == "validate") type = TokenType::VALIDATE;
 
             tokens.push_back({type, ident, startLine, startCol});
             continue;

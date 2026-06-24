@@ -34,7 +34,17 @@
         "scopeName": "source.hx",
         "path": "./syntaxes/hexagen.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Hexagen",
+      "properties": {
+        "hexagen.executablePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Hexagen CLI ('hf') executable (absolute path or relative to workspace root). If blank, auto-detection will search the workspace folder and system PATH."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

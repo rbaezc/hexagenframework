@@ -56,9 +56,11 @@ std::shared_ptr<ASTSlice> Parser::parseSlice() {
             slice->fields.push_back(parseField());
         } else if (check(TokenType::ACTION)) {
             slice->actions.push_back(parseAction());
+        } else if (check(TokenType::VALIDATE)) {
+            parseValidateBlock(slice);
         } else {
             const auto& tok = peek();
-            throw std::runtime_error("Expected 'field' or 'action' in slice definition, got: '" + tok.value + "' at line " + std::to_string(tok.line));
+            throw std::runtime_error("Expected 'field', 'action' or 'validate' in slice definition, got: '" + tok.value + "' at line " + std::to_string(tok.line));
         }
     }
 
@@ -116,6 +118,35 @@ std::shared_ptr<ASTAction> Parser::parseAction() {
     return action;
 }
 
+void Parser::parseValidateBlock(std::shared_ptr<ASTSlice> slice) {
+    consume(TokenType::VALIDATE, "Expected 'validate'");
+    consume(TokenType::LBRACE, "Expected '{' to start validate block");
+
+    while (!check(TokenType::RBRACE) && !check(TokenType::END_OF_FILE)) {
+        const auto& ruleTok = peek();
+        consume(TokenType::IDENTIFIER, "Expected validation rule name (e.g. required, length, format, min, max)");
+        std::string rule = ruleTok.value;
+
+        consume(TokenType::LPAREN, "Expected '(' after validation rule name");
+        std::vector<std::string> args;
+        while (!check(TokenType::RPAREN) && !check(TokenType::END_OF_FILE)) {
+            const auto& argTok = peek();
+            if (check(TokenType::IDENTIFIER) || check(TokenType::INT_LITERAL) || check(TokenType::STRING_LITERAL)) {
+                args.push_back(argTok.value);
+                advance();
+            } else {
+                throw std::runtime_error("Unexpected token '" + argTok.value + "' in validation arguments at line " + std::to_string(argTok.line));
+            }
+            if (!match(TokenType::COMMA)) break;
+        }
+        consume(TokenType::RPAREN, "Expected ')' to close validation rule");
+
+        slice->validations.push_back(std::make_shared<ASTValidation>(rule, args));
+    }
+
+    consume(TokenType::RBRACE, "Expected '}' to close validate block");
+}
+
 std::shared_ptr<ASTStatement> Parser::parseStatement() {
     if (match(TokenType::ENQUEUE)) {
         const auto& jobTok = peek();
@@ -144,6 +175,7 @@ std::shared_ptr<ASTStatement> Parser::parseStatement() {
             }
         }
         consume(TokenType::RPAREN, "Expected ')' after enqueue arguments");
+        return enqueue;
     } else if (match(TokenType::CPP)) {
         const auto& codeTok = peek();
         consume(TokenType::STRING_LITERAL, "Expected string literal containing C++ code after 'cpp'");
@@ -441,6 +473,18 @@ void Parser::parseConfig(std::shared_ptr<ASTProgram> program) {
             const auto& valTok = peek();
             consume(TokenType::IDENTIFIER, "Expected target identifier (e.g., web, desktop)");
             program->target = valTok.value;
+        } else if (keyTok.value == "http") {
+            const auto& valTok = peek();
+            consume(TokenType::IDENTIFIER, "Expected http value (true/false) to enable the outbound HTTP client");
+            program->useHttp = (valTok.value == "true" || valTok.value == "on" || valTok.value == "yes");
+        } else if (keyTok.value == "requires") {
+            // One or more library names, comma-separated (e.g. requires: curl, ssl).
+            while (true) {
+                const auto& libTok = peek();
+                consume(TokenType::IDENTIFIER, "Expected a library name in 'requires'");
+                program->requiredLibs.push_back(libTok.value);
+                if (!match(TokenType::COMMA)) break;
+            }
         } else {
             advance(); // consume value
         }

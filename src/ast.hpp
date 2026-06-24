@@ -216,11 +216,30 @@ public:
     }
 };
 
+// Changeset validation rule, e.g. required(email), length(password, 8, 64).
+class ASTValidation : public ASTNode {
+public:
+    std::string rule;                  // "required", "length", "format", "min", "max"
+    std::vector<std::string> args;     // first arg is the field name
+
+    ASTValidation(std::string rule, std::vector<std::string> args)
+        : rule(rule), args(args) {}
+
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "Validation: " << rule << "(";
+        for (size_t i = 0; i < args.size(); ++i) {
+            std::cout << args[i] << (i + 1 < args.size() ? ", " : "");
+        }
+        std::cout << ")\n";
+    }
+};
+
 class ASTSlice : public ASTNode {
 public:
     std::string name;
     std::vector<std::shared_ptr<ASTField>> fields;
     std::vector<std::shared_ptr<ASTAction>> actions;
+    std::vector<std::shared_ptr<ASTValidation>> validations;
 
     ASTSlice(std::string name) : name(name) {}
     void print(int indent = 0) const override {
@@ -232,6 +251,12 @@ public:
         std::cout << std::string(indent + 2, ' ') << "Actions:\n";
         for (const auto& action : actions) {
             action->print(indent + 4);
+        }
+        if (!validations.empty()) {
+            std::cout << std::string(indent + 2, ' ') << "Validations:\n";
+            for (const auto& v : validations) {
+                v->print(indent + 4);
+            }
         }
     }
 };
@@ -369,10 +394,31 @@ public:
     std::string frontend = "vanilla"; // Default frontend type
     std::string css = "vanilla";       // Default CSS type
     std::string target = "web";        // Default target (web or desktop)
+    bool useHttp = false;              // Enable outbound HTTP(S) client (links OpenSSL)
+    std::vector<std::string> requiredLibs; // Extra libs to link (config requires: ...)
     std::vector<std::shared_ptr<ASTSlice>> slices;
     std::vector<std::shared_ptr<ASTView>> views;
     std::vector<std::shared_ptr<ASTApi>> apis;
     std::vector<std::shared_ptr<ASTJob>> jobs;
+
+    // Flatten the routes declared across ALL api blocks (modular slices) so the
+    // codegen no longer processes only apis[0].
+    std::vector<std::shared_ptr<ASTRoute>> allRoutes() const {
+        std::vector<std::shared_ptr<ASTRoute>> out;
+        for (const auto& api : apis) {
+            for (const auto& r : api->routes) out.push_back(r);
+        }
+        return out;
+    }
+
+    // Flatten the middlewares declared across ALL api blocks.
+    std::vector<std::shared_ptr<ASTMiddleware>> allMiddlewares() const {
+        std::vector<std::shared_ptr<ASTMiddleware>> out;
+        for (const auto& api : apis) {
+            for (const auto& mw : api->middlewares) out.push_back(mw);
+        }
+        return out;
+    }
 
     void print(int indent = 0) const override {
         std::cout << "Program AST (DB Engine: " << dbType << "):\n";

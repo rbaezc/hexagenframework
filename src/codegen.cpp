@@ -5,6 +5,33 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include "../build/embedded_runtime.hpp"  // amalgamated runtime fragments (RT_*)
+
+// Decode escape sequences into their literal characters. Used when emitting raw
+// C++ from `cpp "..."` blocks, where the lexer preserves escapes verbatim but the
+// output must be actual C++ source (e.g. \" must become a real ").
+static std::string decodeEscapes(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '\\' && i + 1 < in.size()) {
+            char n = in[i + 1];
+            switch (n) {
+                case 'n': out += '\n'; break;
+                case 't': out += '\t'; break;
+                case 'r': out += '\r'; break;
+                case '"': out += '"'; break;
+                case '\'': out += '\''; break;
+                case '\\': out += '\\'; break;
+                default: out += n; break;
+            }
+            ++i;
+        } else {
+            out += in[i];
+        }
+    }
+    return out;
+}
 
 std::string CodeGenerator::generateExpression(std::shared_ptr<ASTExpression> expr) {
     if (auto literal = std::dynamic_pointer_cast<ASTLiteral>(expr)) {
@@ -65,12 +92,35 @@ std::string CodeGenerator::generateStatement(std::shared_ptr<ASTStatement> stmt)
         for (const auto& arg : enqueueStmt->arguments) {
             ss << "            jobInst->" << arg.first << " = " << generateExpression(arg.second) << ";\n";
         }
-        ss << "            enqueue_background_task([jobInst]() {\n";
-        ss << "                jobInst->Run();\n";
-        ss << "            });\n";
+        // Serialize all job fields so the job is durable (persisted + recoverable).
+        std::shared_ptr<ASTJob> jdef;
+        for (const auto& j : program->jobs) if (j->name == enqueueStmt->jobName) jdef = j;
+        ss << "            std::stringstream _aj; _aj << \"{\";\n";
+        if (jdef) {
+            for (size_t i = 0; i < jdef->fields.size(); ++i) {
+                const auto& f = jdef->fields[i];
+                ss << "            _aj << \"\\\"" << f->name << "\\\":\";\n";
+                if (f->type == DataType::STRING) {
+                    ss << "            _aj << \"\\\"\" << jobInst->" << f->name << " << \"\\\"\";\n";
+                } else if (f->type == DataType::BOOL) {
+                    ss << "            _aj << (jobInst->" << f->name << " ? \"true\" : \"false\");\n";
+                } else {
+                    ss << "            _aj << jobInst->" << f->name << ";\n";
+                }
+                if (i + 1 < jdef->fields.size()) ss << "            _aj << \",\";\n";
+            }
+        }
+        ss << "            _aj << \"}\";\n";
+        std::string entry = "";
+        if (jdef) {
+            for (const auto& a : jdef->actions) if (a->name == "Run") entry = "Run";
+            if (entry.empty() && !jdef->actions.empty()) entry = jdef->actions[0]->name;
+        }
+        if (entry.empty()) entry = "Run";
+        ss << "            enqueue_persisted_job(\"" << enqueueStmt->jobName << "\", _aj.str(), [jobInst]() { jobInst->" << entry << "(); });\n";
         ss << "        }\n";
     } else if (auto cppStmt = std::dynamic_pointer_cast<ASTCppStatement>(stmt)) {
-        ss << "        " << cppStmt->code << "\n";
+        ss << "        " << decodeEscapes(cppStmt->code) << "\n";
     }
     return ss.str();
 }
@@ -143,8 +193,55 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     for (const auto& field : slice->fields) {
         ss << generateField(field);
     }
-    
+
     ss << "\n";
+
+    // -------------------------------------------------------------
+    // Changeset validation: collects ALL errors (field -> message)
+    // before any write, Ecto-style. Empty map => valid.
+    // -------------------------------------------------------------
+    {
+        auto fieldType = [&](const std::string& fname) -> DataType {
+            for (const auto& f : slice->fields) if (f->name == fname) return f->type;
+            return DataType::UNKNOWN;
+        };
+        ss << "    std::map<std::string, std::string> validateChangeset() {\n";
+        ss << "        std::map<std::string, std::string> errors;\n";
+        for (const auto& v : slice->validations) {
+            if (v->args.empty()) continue;
+            const std::string& fld = v->args[0];
+            DataType ft = fieldType(fld);
+            if (ft == DataType::UNKNOWN) continue; // unknown field, skip safely
+            if (v->rule == "required") {
+                if (ft == DataType::STRING) {
+                    ss << "        if (" << fld << ".empty()) errors[\"" << fld << "\"] = \"is required\";\n";
+                }
+            } else if (v->rule == "length" && v->args.size() >= 3) {
+                if (ft == DataType::STRING) {
+                    ss << "        if (errors.find(\"" << fld << "\") == errors.end() && (" << fld << ".size() < " << v->args[1]
+                       << " || " << fld << ".size() > " << v->args[2] << ")) errors[\"" << fld
+                       << "\"] = \"must be between " << v->args[1] << " and " << v->args[2] << " characters\";\n";
+                }
+            } else if (v->rule == "format" && v->args.size() >= 2) {
+                if (ft == DataType::STRING && (v->args[1] == "email")) {
+                    ss << "        if (errors.find(\"" << fld << "\") == errors.end() && !isValidEmail(" << fld
+                       << ")) errors[\"" << fld << "\"] = \"has invalid format\";\n";
+                }
+            } else if (v->rule == "min" && v->args.size() >= 2) {
+                if (ft == DataType::INT || ft == DataType::FLOAT || ft == DataType::RELATION) {
+                    ss << "        if (" << fld << " < " << v->args[1] << ") errors[\"" << fld
+                       << "\"] = \"must be at least " << v->args[1] << "\";\n";
+                }
+            } else if (v->rule == "max" && v->args.size() >= 2) {
+                if (ft == DataType::INT || ft == DataType::FLOAT || ft == DataType::RELATION) {
+                    ss << "        if (" << fld << " > " << v->args[1] << ") errors[\"" << fld
+                       << "\"] = \"must be at most " << v->args[1] << "\";\n";
+                }
+            }
+        }
+        ss << "        return errors;\n";
+        ss << "    }\n\n";
+    }
 
     std::string dbType = program->dbType;
 
@@ -160,105 +257,54 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     };
 
     // -------------------------------------------------------------
-    // JSONL Fallbacks
+    // JSONL backend — delegates to the runtime Storage strategy
+    // (src/runtime/storage.hpp) instead of inlining a body per method.
     // -------------------------------------------------------------
+    auto colTypeChar = [](DataType t) -> char {
+        switch (t) {
+            case DataType::STRING: return 's';
+            case DataType::FLOAT: return 'f';
+            case DataType::BOOL: return 'b';
+            default: return 'i'; // int / relation
+        }
+    };
+    auto emitColsInit = [&]() {
+        ss << "        static const std::vector<ColumnSpec> _cols = {";
+        for (size_t i = 0; i < slice->fields.size(); ++i) {
+            ss << "{\"" << slice->fields[i]->name << "\", '" << colTypeChar(slice->fields[i]->type) << "'}";
+            if (i + 1 < slice->fields.size()) ss << ", ";
+        }
+        ss << "};\n";
+    };
+
     // saveJSONL
     ss << "    void saveJSONL() {\n";
-    ss << "        std::ofstream outfile(\"db_" << slice->name << ".jsonl\", std::ios::app);\n";
-    ss << "        if (outfile.is_open()) {\n";
-    ss << "            outfile << \"{\";\n";
+    emitColsInit();
+    ss << "        std::vector<std::string> _vals = {";
     for (size_t i = 0; i < slice->fields.size(); ++i) {
         const auto& field = slice->fields[i];
-        ss << "            outfile << \"\\\"" << field->name << "\\\":\";\n";
         if (field->type == DataType::STRING) {
-            ss << "            outfile << \"\\\"\" << " << field->name << " << \"\\\"\";\n";
+            ss << field->name;
         } else if (field->type == DataType::BOOL) {
-            ss << "            outfile << (" << field->name << " ? \"true\" : \"false\");\n";
+            ss << "(" << field->name << " ? std::string(\"true\") : std::string(\"false\"))";
         } else {
-            ss << "            outfile << " << field->name << ";\n";
+            ss << "std::to_string(" << field->name << ")";
         }
-        if (i + 1 < slice->fields.size()) {
-            ss << "            outfile << \",\";\n";
-        }
+        if (i + 1 < slice->fields.size()) ss << ", ";
     }
-    ss << "            outfile << \"}\\n\";\n";
-    ss << "            outfile.close();\n";
-    ss << "        }\n";
+    ss << "};\n";
+    ss << "        getStorage()->insert(\"" << slice->name << "\", _cols, _vals);\n";
     ss << "    }\n\n";
 
     // getAllAsJSON_JSONL
     ss << "    static std::string getAllAsJSON_JSONL(const std::string& req = \"\") {\n";
-    ss << "        std::ifstream infile(\"db_" << slice->name << ".jsonl\");\n";
-    ss << "        std::stringstream ss;\n";
-    ss << "        ss << \"[\";\n";
-    ss << "        int limitVal = -1;\n";
-    ss << "        int offsetVal = 0;\n";
-    ss << "        std::string limitStr = getQueryParam(req, \"_limit\");\n";
-    ss << "        if (!limitStr.empty()) {\n";
-    ss << "            limitVal = safeStoi(limitStr, -1);\n";
-    ss << "        }\n";
-    ss << "        std::string offsetStr = getQueryParam(req, \"_offset\");\n";
-    ss << "        if (!offsetStr.empty()) {\n";
-    ss << "            offsetVal = safeStoi(offsetStr, 0);\n";
-    ss << "        }\n";
-    for (const auto& field : slice->fields) {
-        ss << "        std::string filter_" << field->name << " = getQueryParam(req, \"" << field->name << "\");\n";
-    }
-    ss << "        int matchedCount = 0;\n";
-    ss << "        int skipped = 0;\n";
-    ss << "        if (infile.is_open()) {\n";
-    ss << "            std::string line;\n";
-    ss << "            bool first = true;\n";
-    ss << "            while (std::getline(infile, line)) {\n";
-    ss << "                if (line.empty()) continue;\n";
-    ss << "                bool matches = true;\n";
-    for (const auto& field : slice->fields) {
-        ss << "                if (!filter_" << field->name << ".empty()) {\n";
-        ss << "                    if (getJSONVal(line, \"" << field->name << "\") != filter_" << field->name << ") {\n";
-        ss << "                        matches = false;\n";
-        ss << "                    }\n";
-        ss << "                }\n";
-    }
-    ss << "                if (!matches) continue;\n";
-    ss << "                if (skipped < offsetVal) {\n";
-    ss << "                    skipped++;\n";
-    ss << "                    continue;\n";
-    ss << "                }\n";
-    ss << "                if (limitVal >= 0 && matchedCount >= limitVal) {\n";
-    ss << "                    break;\n";
-    ss << "                }\n";
-    ss << "                if (!first) ss << \",\";\n";
-    ss << "                ss << line;\n";
-    ss << "                first = false;\n";
-    ss << "                matchedCount++;\n";
-    ss << "            }\n";
-    ss << "            infile.close();\n";
-    ss << "        }\n";
-    ss << "        ss << \"]\";\n";
-    ss << "        return ss.str();\n";
+    emitColsInit();
+    ss << "        return getStorage()->selectAllJson(\"" << slice->name << "\", _cols, req);\n";
     ss << "    }\n\n";
 
     // deleteRecord_JSONL
     ss << "    static void deleteRecord_JSONL(const std::string& key, const std::string& value) {\n";
-    ss << "        std::ifstream infile(\"db_" << slice->name << ".jsonl\");\n";
-    ss << "        std::vector<std::string> lines;\n";
-    ss << "        if (infile.is_open()) {\n";
-    ss << "            std::string line;\n";
-    ss << "            while (std::getline(infile, line)) {\n";
-    ss << "                if (line.empty()) continue;\n";
-    ss << "                if (getJSONVal(line, key) != value) {\n";
-    ss << "                    lines.push_back(line);\n";
-    ss << "                }\n";
-    ss << "            }\n";
-    ss << "            infile.close();\n";
-    ss << "        }\n";
-    ss << "        std::ofstream outfile(\"db_" << slice->name << ".jsonl\", std::ios::trunc);\n";
-    ss << "        if (outfile.is_open()) {\n";
-    ss << "            for (const auto& l : lines) {\n";
-    ss << "                outfile << l << \"\\n\";\n";
-    ss << "            }\n";
-    ss << "            outfile.close();\n";
-    ss << "        }\n";
+    ss << "        getStorage()->deleteWhere(\"" << slice->name << "\", key, value);\n";
     ss << "    }\n\n";
 
     // -------------------------------------------------------------
@@ -266,40 +312,8 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     // -------------------------------------------------------------
     ss << "    void save() {\n";
     if (dbType == "sqlite") {
-        ss << "        sqlite3* db = getSQLiteConn();\n";
-        ss << "        if (!db) {\n";
-        ss << "            saveJSONL();\n";
-        ss << "            return;\n";
-        ss << "        }\n";
-        ss << "        std::string query = \"INSERT INTO \\\"" << slice->name << "\\\" (";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            ss << "\\\"" << slice->fields[i]->name << "\\\"" << (i + 1 < slice->fields.size() ? ", " : "");
-        }
-        ss << ") VALUES (";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            ss << "?" << (i + 1 < slice->fields.size() ? ", " : "");
-        }
-        ss << ");\";\n";
-        ss << "        sqlite3_stmt* stmt;\n";
-        ss << "        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {\n";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            const auto& field = slice->fields[i];
-            if (field->type == DataType::STRING) {
-                ss << "            sqlite3_bind_text(stmt, " << (i + 1) << ", " << field->name << ".c_str(), -1, SQLITE_TRANSIENT);\n";
-            } else if (field->type == DataType::INT || field->type == DataType::RELATION) {
-                ss << "            sqlite3_bind_int(stmt, " << (i + 1) << ", " << field->name << ");\n";
-            } else if (field->type == DataType::FLOAT) {
-                ss << "            sqlite3_bind_double(stmt, " << (i + 1) << ", " << field->name << ");\n";
-            } else if (field->type == DataType::BOOL) {
-                ss << "            sqlite3_bind_int(stmt, " << (i + 1) << ", " << field->name << " ? 1 : 0);\n";
-            }
-        }
-        ss << "            if (sqlite3_step(stmt) != SQLITE_DONE) {\n";
-        ss << "                std::cerr << \"[SQLite] Insert failed\" << std::endl;\n";
-        ss << "            }\n";
-        ss << "            sqlite3_finalize(stmt);\n";
-        ss << "        }\n";
-        ss << "        sqlite3_close(db);\n";
+        // Delegates to the active Storage strategy (SqliteStorage for sqlite builds).
+        ss << "        saveJSONL();\n";
     } else if (dbType == "postgres" || dbType == "postgresql") {
         ss << "        PGconn* conn = getPGConn();\n";
         ss << "        if (!conn) {\n";
@@ -330,7 +344,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "            std::cerr << \"[PostgreSQL] Insert failed: \" << PQerrorMessage(conn) << std::endl;\n";
         ss << "        }\n";
         ss << "        PQclear(res);\n";
-        ss << "        PQfinish(conn);\n";
+        ss << "        releasePGConn(conn);\n";
     } else if (dbType == "mysql") {
         ss << "        MYSQL* conn = getMySQLConn();\n";
         ss << "        if (!conn) {\n";
@@ -375,7 +389,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "                mysql_stmt_close(stmt);\n";
         ss << "            }\n";
         ss << "        }\n";
-        ss << "        mysql_close(conn);\n";
+        ss << "        releaseMySQLConn(conn);\n";
     } else {
         ss << "        saveJSONL();\n";
     }
@@ -386,82 +400,8 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
     // -------------------------------------------------------------
     ss << "    static std::string getAllAsJSON(const std::string& req = \"\") {\n";
     if (dbType == "sqlite") {
-        ss << "        sqlite3* db = getSQLiteConn();\n";
-        ss << "        if (!db) return getAllAsJSON_JSONL(req);\n";
-        ss << "        std::vector<std::pair<std::string, std::string>> filters;\n";
-        for (const auto& field : slice->fields) {
-            ss << "        {\n";
-            ss << "            std::string val = getQueryParam(req, \"" << field->name << "\");\n";
-            ss << "            if (!val.empty()) {\n";
-            if (field->type == DataType::BOOL) {
-                ss << "                if (val == \"true\") val = \"1\";\n";
-                ss << "                else if (val == \"false\") val = \"0\";\n";
-            }
-            ss << "                filters.push_back({\"" << field->name << "\", val});\n";
-            ss << "            }\n";
-            ss << "        }\n";
-        }
-        ss << "        std::string query = \"SELECT * FROM \\\"" << slice->name << "\\\"\";\n";
-        ss << "        if (!filters.empty()) {\n";
-        ss << "            query += \" WHERE \";\n";
-        ss << "            for (size_t i = 0; i < filters.size(); ++i) {\n";
-        ss << "                query += \"\\\"\" + filters[i].first + \"\\\" = ?\";\n";
-        ss << "                if (i + 1 < filters.size()) {\n";
-        ss << "                    query += \" AND \";\n";
-        ss << "                }\n";
-        ss << "            }\n";
-        ss << "        }\n";
-        ss << "        std::string limitStr = getQueryParam(req, \"_limit\");\n";
-        ss << "        std::string offsetStr = getQueryParam(req, \"_offset\");\n";
-        ss << "        if (!limitStr.empty()) {\n";
-        ss << "            query += \" LIMIT ?\";\n";
-        ss << "        }\n";
-        ss << "        if (!offsetStr.empty()) {\n";
-        ss << "            query += \" OFFSET ?\";\n";
-        ss << "        }\n";
-        ss << "        sqlite3_stmt* stmt;\n";
-        ss << "        std::stringstream ss;\n";
-        ss << "        ss << \"[\";\n";
-        ss << "        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {\n";
-        ss << "            int bindIdx = 1;\n";
-        ss << "            for (const auto& f : filters) {\n";
-        ss << "                sqlite3_bind_text(stmt, bindIdx++, f.second.c_str(), -1, SQLITE_TRANSIENT);\n";
-        ss << "            }\n";
-        ss << "            if (!limitStr.empty()) {\n";
-        ss << "                sqlite3_bind_int(stmt, bindIdx++, safeStoi(limitStr));\n";
-        ss << "            }\n";
-        ss << "            if (!offsetStr.empty()) {\n";
-        ss << "                sqlite3_bind_int(stmt, bindIdx++, safeStoi(offsetStr));\n";
-        ss << "            }\n";
-        ss << "            bool first = true;\n";
-        ss << "            while (sqlite3_step(stmt) == SQLITE_ROW) {\n";
-        ss << "                if (!first) ss << \",\";\n";
-        ss << "                ss << \"{\";\n";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            const auto& field = slice->fields[i];
-            ss << "                ss << \"\\\"" << field->name << "\\\":\";\n";
-            int colIdx = i + 1; // 0 is id
-            if (field->type == DataType::STRING) {
-                ss << "                ss << \"\\\"\" << sqlite3_column_text(stmt, " << colIdx << ") << \"\\\"\";\n";
-            } else if (field->type == DataType::INT || field->type == DataType::RELATION) {
-                ss << "                ss << sqlite3_column_int(stmt, " << colIdx << ");\n";
-            } else if (field->type == DataType::FLOAT) {
-                ss << "                ss << sqlite3_column_double(stmt, " << colIdx << ");\n";
-            } else if (field->type == DataType::BOOL) {
-                ss << "                ss << (sqlite3_column_int(stmt, " << colIdx << ") ? \"true\" : \"false\");\n";
-            }
-            if (i + 1 < slice->fields.size()) {
-                ss << "                ss << \",\";\n";
-            }
-        }
-        ss << "                ss << \"}\";\n";
-        ss << "                first = false;\n";
-        ss << "            }\n";
-        ss << "            sqlite3_finalize(stmt);\n";
-        ss << "        }\n";
-        ss << "        ss << \"]\";\n";
-        ss << "        sqlite3_close(db);\n";
-        ss << "        return ss.str();\n";
+        // Delegates to the active Storage strategy (SqliteStorage for sqlite builds).
+        ss << "        return getAllAsJSON_JSONL(req);\n";
     } else if (dbType == "postgres" || dbType == "postgresql") {
         ss << "        PGconn* conn = getPGConn();\n";
         ss << "        if (!conn) return getAllAsJSON_JSONL(req);\n";
@@ -505,7 +445,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "        PGresult* res = PQexecParams(conn, query.c_str(), c_params.size(), NULL, c_params.empty() ? NULL : c_params.data(), NULL, NULL, 0);\n";
         ss << "        if (PQresultStatus(res) != PGRES_TUPLES_OK) {\n";
         ss << "            PQclear(res);\n";
-        ss << "            PQfinish(conn);\n";
+        ss << "            releasePGConn(conn);\n";
         ss << "            return getAllAsJSON_JSONL(req);\n";
         ss << "        }\n";
         ss << "        int rows = PQntuples(res);\n";
@@ -540,7 +480,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "        }\n";
         ss << "        ss << \"]\";\n";
         ss << "        PQclear(res);\n";
-        ss << "        PQfinish(conn);\n";
+        ss << "        releasePGConn(conn);\n";
         ss << "        return ss.str();\n";
     } else if (dbType == "mysql") {
         ss << "        MYSQL* conn = getMySQLConn();\n";
@@ -621,7 +561,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "            }\n";
         ss << "        }\n";
         ss << "        ss << \"]\";\n";
-        ss << "        mysql_close(conn);\n";
+        ss << "        releaseMySQLConn(conn);\n";
         ss << "        return ss.str();\n";
     } else {
         ss << "        return getAllAsJSON_JSONL(req);\n";
@@ -630,19 +570,8 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
 
     ss << "    static void deleteRecord(const std::string& key, const std::string& value) {\n";
     if (dbType == "sqlite") {
-        ss << "        sqlite3* db = getSQLiteConn();\n";
-        ss << "        if (!db) {\n";
-        ss << "            deleteRecord_JSONL(key, value);\n";
-        ss << "            return;\n";
-        ss << "        }\n";
-        ss << "        std::string query = \"DELETE FROM \\\"" << slice->name << "\\\" WHERE \\\"\" + key + \"\\\" = ?;\";\n";
-        ss << "        sqlite3_stmt* stmt;\n";
-        ss << "        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {\n";
-        ss << "            sqlite3_bind_text(stmt, 1, value.c_str(), -1, SQLITE_TRANSIENT);\n";
-        ss << "            sqlite3_step(stmt);\n";
-        ss << "            sqlite3_finalize(stmt);\n";
-        ss << "        }\n";
-        ss << "        sqlite3_close(db);\n";
+        // Delegates to the active Storage strategy (SqliteStorage for sqlite builds).
+        ss << "        deleteRecord_JSONL(key, value);\n";
     } else if (dbType == "postgres" || dbType == "postgresql") {
         ss << "        PGconn* conn = getPGConn();\n";
         ss << "        if (!conn) {\n";
@@ -654,7 +583,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "        std::string query = \"DELETE FROM \\\"" << slice->name << "\\\" WHERE \\\"\" + key + \"\\\" = $1;\";\n";
         ss << "        PGresult* res = PQexecParams(conn, query.c_str(), 1, NULL, paramValues, NULL, NULL, 0);\n";
         ss << "        PQclear(res);\n";
-        ss << "        PQfinish(conn);\n";
+        ss << "        releasePGConn(conn);\n";
     } else if (dbType == "mysql") {
         ss << "        MYSQL* conn = getMySQLConn();\n";
         ss << "        if (!conn) {\n";
@@ -675,7 +604,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
         ss << "                mysql_stmt_close(stmt);\n";
         ss << "            }\n";
         ss << "        }\n";
-        ss << "        mysql_close(conn);\n";
+        ss << "        releaseMySQLConn(conn);\n";
     } else {
         ss << "        deleteRecord_JSONL(key, value);\n";
     }
@@ -745,7 +674,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
                     ss << "            }\n";
                     ss << "            sqlite3_finalize(stmt);\n";
                     ss << "        }\n";
-                    ss << "        sqlite3_close(db);\n";
+                    ss << "        releaseSQLiteConn(db);\n";
                     ss << "        return found;\n";
                 } else if (dbType == "postgres" || dbType == "postgresql") {
                     ss << "        PGconn* conn = getPGConn();\n";
@@ -777,7 +706,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
                     ss << "            found = true;\n";
                     ss << "        }\n";
                     ss << "        PQclear(res);\n";
-                    ss << "        PQfinish(conn);\n";
+                    ss << "        releasePGConn(conn);\n";
                     ss << "        return found;\n";
                 } else if (dbType == "mysql") {
                     ss << "        MYSQL* conn = getMySQLConn();\n";
@@ -817,7 +746,7 @@ std::string CodeGenerator::generateSlice(std::shared_ptr<ASTSlice> slice) {
                     ss << "                mysql_free_result(result);\n";
                     ss << "            }\n";
                     ss << "        }\n";
-                    ss << "        mysql_close(conn);\n";
+                    ss << "        releaseMySQLConn(conn);\n";
                     ss << "        return found;\n";
                 } else {
                     ss << "        return findUser_JSONL(emailVal, user);\n";
@@ -849,939 +778,6 @@ std::string CodeGenerator::generateJob(std::shared_ptr<ASTJob> job) {
     return ss.str();
 }
 
-std::string CodeGenerator::generateHTMLContent(std::shared_ptr<ASTView> view) {
-    bool hasHtml = false;
-    for (const auto& elem : view->elements) {
-        if (elem->type == "html") {
-            hasHtml = true;
-            break;
-        }
-    }
-    std::string customStyle = "";
-    if (std::filesystem::exists("style.css")) {
-        std::ifstream f("style.css");
-        if (f.is_open()) {
-            std::stringstream buffer;
-            buffer << f.rdbuf();
-            customStyle = buffer.str();
-            f.close();
-        }
-    }
-    std::stringstream ss;
-    ss << "<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n"
-       << "    <meta charset=\"UTF-8\">\n"
-       << "    <title>";
-    std::string titleText = "Hexagen App";
-    for (const auto& elem : view->elements) {
-        if (elem->type == "title") titleText = elem->label;
-    }
-    ss << titleText << "</title>\n"
-       << "    <link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n"
-       << "    <link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n"
-       << "    <link href=\"https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap\" rel=\"stylesheet\">\n"
-       << "    <style>\n";
-    if (program->css != "none") {
-        ss << "        :root {\n"
-           << "            --bg-color: #0b0f19;\n"
-           << "            --card-bg: rgba(20, 30, 55, 0.45);\n"
-           << "            --border-color: rgba(255, 255, 255, 0.08);\n"
-           << "            --primary-glow: #00f2fe;\n"
-           << "            --secondary-glow: #4facfe;\n"
-           << "            --text-color: #f3f4f6;\n"
-           << "            --text-muted: #9ca3af;\n"
-           << "        }\n"
-           << "        * { box-sizing: border-box; margin: 0; padding: 0; }\n"
-           << "        body {\n"
-           << "            font-family: 'Outfit', sans-serif; background-color: var(--bg-color); color: var(--text-color);\n"
-           << "            min-height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; overflow-x: hidden; position: relative;\n"
-           << "        }\n"
-           << "        body::before {\n"
-           << "            content: ''; position: absolute; width: 300px; height: 300px;\n"
-           << "            background: radial-gradient(circle, var(--primary-glow) 0%, transparent 70%);\n"
-           << "            top: 10%; left: 15%; opacity: 0.15; filter: blur(80px); z-index: 0;\n"
-           << "        }\n"
-           << "        body::after {\n"
-           << "            content: ''; position: absolute; width: 350px; height: 350px;\n"
-           << "            background: radial-gradient(circle, var(--secondary-glow) 0%, transparent 70%);\n"
-           << "            bottom: 15%; right: 15%; opacity: 0.15; filter: blur(80px); z-index: 0;\n"
-           << "        }\n"
-           << "        .container { width: 100%; max-width: 550px; padding: 2rem; z-index: 1; }\n"
-           << "        .card {\n"
-           << "            background: var(--card-bg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);\n"
-           << "            border: 1px solid var(--border-color); border-radius: 24px; padding: 2.5rem; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);\n"
-           << "        }\n"
-           << "        .heading-container { margin-bottom: 2rem; text-align: center; }\n"
-           << "        .main-heading { font-size: 2rem; font-weight: 800; background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; }\n"
-           << "        .sub-heading { font-size: 0.95rem; color: var(--text-muted); }\n"
-           << "        .form-group { margin-bottom: 1.5rem; }\n"
-           << "        .form-label { display: block; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem; }\n"
-           << "        .form-input { width: 100%; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); border-radius: 12px; padding: 0.85rem 1rem; color: white; font-family: inherit; font-size: 1rem; }\n"
-           << "        .form-input:focus { outline: none; border-color: var(--primary-glow); background: rgba(255, 255, 255, 0.06); }\n"
-           << "        .btn {\n"
-           << "            width: 100%; background: linear-gradient(135deg, var(--secondary-glow) 0%, var(--primary-glow) 100%);\n"
-           << "            border: none; color: #0b0f19; padding: 1rem; font-size: 1rem; font-weight: 700; border-radius: 12px; cursor: pointer; transition: all 0.3s ease; margin-bottom: 1rem;\n"
-           << "        }\n"
-           << "        .btn:hover { transform: translateY(-2px); filter: brightness(1.1); }\n"
-           << "        .result-panel { margin-top: 2rem; background: rgba(0, 0, 0, 0.25); border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.05); padding: 1.25rem; display: none; }\n"
-           << "        .result-title { font-size: 0.85rem; font-weight: 600; color: var(--primary-glow); margin-bottom: 0.5rem; text-transform: uppercase; }\n"
-           << "        .result-code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; white-space: pre-wrap; color: #e5e7eb; }\n"
-           << "        .table-container { margin-top: 2rem; background: rgba(0, 0, 0, 0.2); border-radius: 12px; overflow: hidden; border: 1px solid var(--border-color); }\n"
-           << "        .data-table { width: 100%; text-align: left; border-collapse: collapse; }\n"
-           << "        .data-table th, .data-table td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border-color); }\n"
-           << "        .data-table th { background: rgba(255, 255, 255, 0.03); font-size: 0.85rem; text-transform: uppercase; color: var(--text-muted); }\n"
-           << "        .data-table td { font-size: 0.95rem; }\n";
-    }
-    if (!customStyle.empty()) {
-        ss << "        /* Custom Styles Overrides */\n" << customStyle << "\n";
-    }
-    ss << "    </style>\n"
-       << "</head>\n"
-       << "<body>\n";
-
-    if (program->css != "none") {
-        ss << "    <main class=\"container\">\n"
-           << "        <section class=\"card\">\n"
-           << "            <div id=\"hexa-root\">\n";
-        
-        ss << "                <div class=\"heading-container\">\n";
-        ss << "                    <h1 class=\"main-heading\">" << view->name << "</h1>\n";
-        
-        std::string sub = "Hexagen Compiled UI";
-        for (const auto& elem : view->elements) {
-            if (elem->type == "title") sub = elem->label;
-        }
-        ss << "                    <p class=\"sub-heading\">" << sub << "</p>\n";
-        ss << "                </div>\n";
-    } else {
-        ss << "            <div id=\"hexa-root\">\n";
-    }
-
-    for (const auto& elem : view->elements) {
-        if (elem->type == "input") {
-            if (program->css == "none") {
-                std::string cls = elem->className.empty() ? "" : " class=\"" + elem->className + "\"";
-                ss << "                <div" << cls << ">\n";
-                ss << "                    <label" << cls << ">" << elem->label << "</label>\n";
-                ss << "                    <input type=\"text\"" << cls << " id=\"input-" << elem->name << "\" name=\"" << elem->name << "\">\n";
-                ss << "                </div>\n";
-            } else {
-                ss << "                <div class=\"form-group\">\n";
-                ss << "                    <label class=\"form-label\">" << elem->label << "</label>\n";
-                ss << "                    <input type=\"text\" class=\"form-input\" id=\"input-" << elem->name << "\" name=\"" << elem->name << "\">\n";
-                ss << "                </div>\n";
-            }
-        } else if (elem->type == "button") {
-            // Check if redirect / navigation button
-            bool isNavigationView = false;
-            std::string viewTarget = "";
-            for (const auto& v : program->views) {
-                if (v->name == elem->targetAction) {
-                    isNavigationView = true;
-                    viewTarget = v->name;
-                    std::transform(viewTarget.begin(), viewTarget.end(), viewTarget.begin(), ::tolower);
-                    break;
-                }
-            }
-
-            std::string clickAttr = "";
-            if (isNavigationView) {
-                clickAttr = "onclick=\"window.location.href = '/" + viewTarget + "'\"";
-            } else {
-                std::string apiEndpoint = "/execute";
-                if (!program->apis.empty()) {
-                    for (const auto& r : program->apis[0]->routes) {
-                        if (r->targetAction == elem->targetAction) {
-                            apiEndpoint = r->path;
-                            break;
-                        }
-                    }
-                }
-                clickAttr = "onclick=\"triggerAction('" + apiEndpoint + "')\"";
-            }
-
-            if (program->css == "none") {
-                std::string cls = elem->className.empty() ? "" : " class=\"" + elem->className + "\"";
-                ss << "                <button" << cls << " " << clickAttr << ">" << elem->label << "</button>\n";
-            } else {
-                ss << "                <button class=\"btn\" " << clickAttr << ">" << elem->label << "</button>\n";
-            }
-        } else if (elem->type == "table") {
-            // Add action column if there is delete route
-            bool hasDeleteRoute = false;
-            std::string deleteEndpoint = "";
-            if (!program->apis.empty()) {
-                for (const auto& r : program->apis[0]->routes) {
-                    if (r->method == "DELETE") {
-                        size_t dotPos = r->targetAction.find('.');
-                        std::string targetSlice = (dotPos != std::string::npos) ? r->targetAction.substr(0, dotPos) : "";
-                        if (targetSlice == elem->label) {
-                            hasDeleteRoute = true;
-                            deleteEndpoint = r->path;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (program->css == "none") {
-                std::string cls = elem->className.empty() ? "" : " class=\"" + elem->className + "\"";
-                ss << "                <div" << cls << ">\n";
-                ss << "                    <table>\n";
-                ss << "                        <thead>\n";
-                ss << "                            <tr>\n";
-                for (const auto& col : elem->columns) {
-                    ss << "                                <th>" << col << "</th>\n";
-                }
-                if (hasDeleteRoute) {
-                    ss << "                                <th>Acciones</th>\n";
-                }
-                ss << "                            </tr>\n";
-                ss << "                        </thead>\n";
-                ss << "                        <tbody id=\"table-body-" << elem->label << "\">\n";
-                ss << "                            <!-- dynamic rows -->\n";
-                ss << "                        </tbody>\n";
-                ss << "                    </table>\n";
-                ss << "                </div>\n";
-            } else {
-                ss << "                <div class=\"table-container\">\n";
-                ss << "                    <table class=\"data-table\">\n";
-                ss << "                        <thead>\n";
-                ss << "                            <tr>\n";
-                for (const auto& col : elem->columns) {
-                    ss << "                                <th>" << col << "</th>\n";
-                }
-                if (hasDeleteRoute) {
-                    ss << "                                <th>Acciones</th>\n";
-                }
-                ss << "                            </tr>\n";
-                ss << "                        </thead>\n";
-                ss << "                        <tbody id=\"table-body-" << elem->label << "\">\n";
-                ss << "                            <!-- dynamic rows -->\n";
-                ss << "                        </tbody>\n";
-                ss << "                    </table>\n";
-                ss << "                </div>\n";
-            }
-        } else if (elem->type == "html") {
-            if (program->css == "none") {
-                std::string cls = elem->className.empty() ? "" : " class=\"" + elem->className + "\"";
-                ss << "                <div" << cls << ">" << elem->label << "</div>\n";
-            } else {
-                ss << elem->label << "\n";
-            }
-        }
-    }
-
-    ss << "            </div>\n";
-    if (program->css != "none") {
-        ss << "            <div class=\"result-panel\" id=\"result-panel\">\n"
-           << "                <div class=\"result-title\" id=\"result-title\">Respuesta de la API C++</div>\n"
-           << "                <pre class=\"result-code\"><code id=\"result-code\"></code></pre>\n"
-           << "            </div>\n"
-           << "        </section>\n"
-           << "    </main>\n";
-    } else {
-        ss << "            <div id=\"result-panel\" style=\"display:none;\">\n"
-           << "                <div id=\"result-title\">Respuesta de la API C++</div>\n"
-           << "                <pre><code id=\"result-code\"></code></pre>\n"
-           << "            </div>\n";
-    }
-    ss << "    <script>\n";
-
-    // Refresh dynamic tables script
-    ss << "        async function refreshTables() {\n";
-    for (const auto& elem : view->elements) {
-        if (elem->type == "table") {
-            bool hasDeleteRoute = false;
-            std::string deleteEndpoint = "";
-            if (!program->apis.empty()) {
-                for (const auto& r : program->apis[0]->routes) {
-                    if (r->method == "DELETE") {
-                        size_t dotPos = r->targetAction.find('.');
-                        std::string targetSlice = (dotPos != std::string::npos) ? r->targetAction.substr(0, dotPos) : "";
-                        if (targetSlice == elem->label) {
-                            hasDeleteRoute = true;
-                            deleteEndpoint = r->path;
-                            break;
-                        }
-                    }
-                }
-            }
-            ss << "            try {\n";
-            ss << "                const response = await fetch('/api/" << elem->label << "');\n";
-            ss << "                const data = await response.json();\n";
-            ss << "                const tbody = document.getElementById('table-body-" << elem->label << "');\n";
-            ss << "                if (tbody) {\n";
-            ss << "                    tbody.innerHTML = '';\n";
-            ss << "                    data.forEach(row => {\n";
-            ss << "                        const tr = document.createElement('tr');\n";
-            ss << "                        let rowHtml = '';\n";
-            for (const auto& col : elem->columns) {
-                ss << "                        rowHtml += `<td>${row." << col << " || ''}</td>`;\n";
-            }
-            if (hasDeleteRoute) {
-                std::string keyCol = elem->columns.empty() ? "" : elem->columns[0];
-                ss << "                        rowHtml += `<td><button class=\"btn\" style=\"padding:0.4rem 0.8rem; font-size:0.8rem; margin:0; width:auto; background:linear-gradient(135deg, #f43f5e 0%, #e11d48 100%); color:white;\" onclick=\"deleteRow('${row." << keyCol << "}', '" << deleteEndpoint << "')\">Eliminar</button></td>`;\n";
-            }
-            ss << "                        tr.innerHTML = rowHtml;\n";
-            ss << "                        tbody.appendChild(tr);\n";
-            ss << "                    });\n";
-            ss << "                }\n";
-            ss << "            } catch (err) {}\n";
-        }
-    }
-    ss << "        }\n\n";
-
-    // Delete row function
-    ss << "        async function deleteRow(idValue, endpoint) {\n";
-    ss << "            if (!confirm('¿Seguro que deseas eliminar este registro?')) return;\n";
-    ss << "            const payload = {};\n";
-    for (const auto& elem : view->elements) {
-        if (elem->type == "table") {
-            std::string firstFieldName = "";
-            for (const auto& slice : program->slices) {
-                if (slice->name == elem->label) {
-                    if (!slice->fields.empty()) {
-                        firstFieldName = slice->fields[0]->name;
-                    }
-                }
-            }
-            if (firstFieldName.empty() && !elem->columns.empty()) {
-                firstFieldName = elem->columns[0];
-            }
-            ss << "            payload['" << firstFieldName << "'] = idValue;\n";
-        }
-    }
-    ss << "            try {\n";
-    ss << "                const response = await fetch(endpoint, {\n";
-    ss << "                    method: 'DELETE',\n";
-    ss << "                    headers: {\n";
-    ss << "                        'Content-Type': 'application/json',\n";
-    ss << "                        'Authorization': 'Bearer ' + (localStorage.getItem('hexagen_token') || 'hexagen_token_123')\n";
-    ss << "                    },\n";
-    ss << "                    body: JSON.stringify(payload)\n";
-    ss << "                });\n";
-    ss << "                const data = await response.json();\n";
-    ss << "                document.getElementById('result-code').innerText = JSON.stringify(data, null, 2);\n";
-    ss << "                document.getElementById('result-panel').style.display = 'block';\n";
-    ss << "                refreshTables();\n";
-    ss << "            } catch (err) {\n";
-    ss << "                alert('Error al eliminar el registro');\n";
-    ss << "            }\n";
-    ss << "        }\n\n";
-
-    ss << "        async function triggerAction(endpoint) {\n"
-       << "            const payload = {};\n"
-       << "            document.querySelectorAll('.form-input').forEach(input => {\n"
-       << "                payload[input.name] = input.value;\n"
-       << "            });\n"
-       << "            try {\n"
-       << "                const response = await fetch(endpoint, {\n"
-       << "                    method: 'POST',\n"
-       << "                    headers: { \n"
-       << "                        'Content-Type': 'application/json',\n"
-       << "                        'Authorization': 'Bearer ' + (localStorage.getItem('hexagen_token') || 'hexagen_token_123')\n"
-       << "                    },\n"
-       << "                    body: JSON.stringify(payload)\n"
-       << "                });\n"
-       << "                const data = await response.json();\n"
-       << "                document.getElementById('result-code').innerText = JSON.stringify(data, null, 2);\n"
-       << "                document.getElementById('result-panel').style.display = 'block';\n"
-       << "                refreshTables();\n"
-       << "            } catch (err) {\n"
-       << "                document.getElementById('result-code').innerText = 'Error connecting to API server.';\n"
-       << "                document.getElementById('result-panel').style.display = 'block';\n"
-       << "            }\n"
-       << "        }\n";
-    
-    ss << "        // LiveView Client-side Script (Phase 2)\n"
-       << "        const liveSocket = new WebSocket('ws://' + window.location.host + '/live');\n"
-       << "        liveSocket.onmessage = function(event) {\n"
-       << "            try {\n"
-       << "                const msg = JSON.parse(event.data);\n"
-       << "                if (msg.event === 'action') {\n"
-       << "                    refreshTables();\n"
-       << "                } else if (msg.event === 'input_change') {\n"
-       << "                    const input = document.getElementById('input-' + msg.field);\n"
-       << "                    if (input && input.value !== msg.value) {\n"
-       << "                        input.value = msg.value;\n"
-       << "                    }\n"
-       << "                }\n"
-       << "            } catch(e) {}\n"
-       << "        };\n"
-       << "        function setupLiveEvents() {\n"
-       << "            document.querySelectorAll('.form-input').forEach(input => {\n"
-       << "                input.addEventListener('input', () => {\n"
-       << "                    liveSocket.send(JSON.stringify({\n"
-       << "                        event: 'input_change',\n"
-       << "                        field: input.name,\n"
-       << "                        value: input.value\n"
-       << "                    }));\n"
-       << "                });\n"
-       << "            });\n"
-       << "        }\n"
-       << "        liveSocket.onopen = setupLiveEvents;\n\n";
-     
-    ss << "        window.onload = () => { refreshTables(); setupLiveEvents(); };\n"
-       << "    </script>\n"
-       << "</body>\n"
-       << "</html>\n";
-
-    return ss.str();
-}
-
-void CodeGenerator::generateReactFrontend() {
-    namespace fs = std::filesystem;
-    try {
-        fs::create_directories("frontend/src/pages");
-    } catch (...) {
-        std::cerr << "Error creating directory frontend/src/pages" << std::endl;
-        return;
-    }
-
-    // package.json
-    {
-        std::ofstream file("frontend/package.json");
-        if (file.is_open()) {
-            file << R"JSON({
-  "name": "hexagen-frontend",
-  "private": true,
-  "version": "0.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.22.3"
-  },
-  "devDependencies": {
-    "@types/react": "^18.2.66",
-    "@types/react-dom": "^18.2.22",
-    "@vitejs/plugin-react": "^4.2.1",
-    "autoprefixer": "^10.4.19",
-    "postcss": "^8.4.38",
-    "tailwindcss": "^3.4.1",
-    "typescript": "^5.2.2",
-    "vite": "^5.2.0"
-  }
-})JSON";
-            file.close();
-        }
-    }
-
-    // tsconfig.json
-    {
-        std::ofstream file("frontend/tsconfig.json");
-        if (file.is_open()) {
-            file << R"JSON({
-  "compilerOptions": {
-    "target": "ES2020",
-    "useDefineForClassFields": true,
-    "lib": ["DOM", "DOM.Iterable", "ES2020"],
-    "module": "ESNext",
-    "skipLibCheck": true,
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true,
-    "jsx": "react-jsx",
-    "strict": true,
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "noFallthroughCasesInSwitch": true
-  },
-  "include": ["src"]
-})JSON";
-            file.close();
-        }
-    }
-
-    // vite.config.ts
-    {
-        std::ofstream file("frontend/vite.config.ts");
-        if (file.is_open()) {
-            file << R"TS(import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 3000,
-    proxy: {
-      '/api': 'http://localhost:8080'
-    }
-  }
-});
-)TS";
-            file.close();
-        }
-    }
-
-    // tailwind.config.js
-    {
-        std::ofstream file("frontend/tailwind.config.js");
-        if (file.is_open()) {
-            file << R"JS(/** @type {import('tailwindcss').Config} */
-export default {
-  content: [
-    "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
-  ],
-  theme: {
-    extend: {},
-  },
-  plugins: [],
-}
-)JS";
-            file.close();
-        }
-    }
-
-    // postcss.config.js
-    {
-        std::ofstream file("frontend/postcss.config.js");
-        if (file.is_open()) {
-            file << R"JS(export default {
-  plugins: {
-    tailwindcss: {},
-    autoprefixer: {},
-  },
-}
-)JS";
-            file.close();
-        }
-    }
-
-    // index.html
-    {
-        std::ofstream file("frontend/index.html");
-        if (file.is_open()) {
-            file << R"HTML(<!DOCTYPE html>
-<html lang="es">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Hexagen React App</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>
-)HTML";
-            file.close();
-        }
-    }
-
-    // src/main.tsx
-    {
-        std::ofstream file("frontend/src/main.tsx");
-        if (file.is_open()) {
-            file << R"TS(import React from 'react';
-import ReactDOM from 'react-dom/client';
-import App from './App';
-import './index.css';
-
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
-)TS";
-            file.close();
-        }
-    }
-
-    // src/index.css
-    {
-        std::ofstream file("frontend/src/index.css");
-        if (file.is_open()) {
-            file << R"CSS(@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-:root {
-    --bg-color: #0b0f19;
-    --card-bg: rgba(20, 30, 55, 0.45);
-    --border-color: rgba(255, 255, 255, 0.08);
-    --primary-glow: #00f2fe;
-    --secondary-glow: #4facfe;
-    --text-color: #f3f4f6;
-    --text-muted: #9ca3af;
-}
-)CSS";
-            // Check if local style.css exists in the directory where hf was run, and merge it
-            if (std::filesystem::exists("style.css")) {
-                std::ifstream custom("style.css");
-                if (custom.is_open()) {
-                    file << "\n/* Custom Styles Overrides */\n";
-                    file << custom.rdbuf();
-                    custom.close();
-                }
-            }
-            file.close();
-        }
-    }
-
-    // src/App.tsx
-    {
-        std::ofstream file("frontend/src/App.tsx");
-        if (file.is_open()) {
-            file << "import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';\n";
-            for (const auto& view : program->views) {
-                file << "import " << view->name << " from './pages/" << view->name << "';\n";
-            }
-            file << "\nexport default function App() {\n";
-            file << "    return (\n";
-            file << "        <Router>\n";
-            file << "            <Routes>\n";
-            if (!program->views.empty()) {
-                file << "                <Route path=\"/\" element={<" << program->views[0]->name << " />} />\n";
-            }
-            for (const auto& view : program->views) {
-                std::string pathLower = view->name;
-                std::transform(pathLower.begin(), pathLower.end(), pathLower.begin(), ::tolower);
-                file << "                <Route path=\"/" << pathLower << "\" element={<" << view->name << " />} />\n";
-            }
-            file << "            </Routes>\n";
-            file << "        </Router>\n";
-            file << "    );\n";
-            file << "}\n";
-            file.close();
-        }
-    }
-
-    // Generate each view
-    for (const auto& view : program->views) {
-        generateReactPage(view);
-    }
-
-    std::cerr << "[Hexagen] Building React frontend..." << std::endl;
-    if (!fs::exists("frontend/node_modules")) {
-        std::cerr << "[Hexagen] Installing frontend dependencies (npm install)..." << std::endl;
-        std::system("cd frontend && npm install >&2");
-    }
-    std::system("cd frontend && npm run build >&2");
-}
-
-void CodeGenerator::generateReactPage(std::shared_ptr<ASTView> view) {
-    std::ofstream file("frontend/src/pages/" + view->name + ".tsx");
-    if (!file.is_open()) return;
-
-    file << "import React, { useState, useEffect } from 'react';\n";
-    file << "import { useNavigate } from 'react-router-dom';\n\n";
-    file << "export default function " << view->name << "() {\n";
-    file << "    const navigate = useNavigate();\n";
-
-    // Detect inputs and create state variables
-    for (const auto& elem : view->elements) {
-        if (elem->type == "input") {
-            file << "    const [" << elem->name << ", set" << elem->name << "] = useState('');\n";
-        }
-    }
-
-    // Detect tables and create state variables and fetch triggers
-    for (const auto& elem : view->elements) {
-        if (elem->type == "table") {
-            file << "    const [" << elem->label << "Rows, set" << elem->label << "Rows] = useState<any[]>([]);\n";
-            file << "    const refresh" << elem->label << " = async () => {\n";
-            file << "        try {\n";
-            file << "            const res = await fetch('/api/" << elem->label << "');\n";
-            file << "            const data = await res.json();\n";
-            file << "            set" << elem->label << "Rows(data);\n";
-            file << "        } catch(err) {}\n";
-            file << "    };\n";
-        }
-    }
-
-    // Global result block state
-    file << "    const [result, setResult] = useState<any>(null);\n\n";
-
-    // useEffect to populate tables on mount
-    file << "    useEffect(() => {\n";
-    for (const auto& elem : view->elements) {
-        if (elem->type == "table") {
-            file << "        refresh" << elem->label << "();\n";
-        }
-    }
-    file << "    }, []);\n\n";
-
-    // Handle action click functions
-    for (const auto& elem : view->elements) {
-        if (elem->type == "button") {
-            size_t dotPos = elem->targetAction.find('.');
-            if (dotPos != std::string::npos) {
-                std::string sliceName = elem->targetAction.substr(0, dotPos);
-                std::string actionName = elem->targetAction.substr(dotPos + 1);
-                
-                file << "    const handle" << sliceName << "_" << actionName << " = async () => {\n";
-                file << "        const payload = {\n";
-                for (const auto& inputElem : view->elements) {
-                    if (inputElem->type == "input") {
-                        bool isNum = false;
-                        for (const auto& s : program->slices) {
-                            if (s->name == sliceName) {
-                                for (const auto& f : s->fields) {
-                                    if (f->name == inputElem->name && (f->type == DataType::INT || f->type == DataType::FLOAT || f->type == DataType::RELATION)) {
-                                        isNum = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if (isNum) {
-                            file << "            " << inputElem->name << ": Number(" << inputElem->name << ") || 0,\n";
-                        } else {
-                            file << "            " << inputElem->name << ": " << inputElem->name << ",\n";
-                        }
-                    }
-                }
-                file << "        };\n";
-                file << "        try {\n";
-                file << "            const res = await fetch('/api/" << sliceName << "', {\n";
-                file << "                method: 'POST',\n";
-                file << "                headers: { 'Content-Type': 'application/json' },\n";
-                file << "                body: JSON.stringify(payload)\n";
-                file << "            });\n";
-                file << "            const data = await res.json();\n";
-                file << "            setResult(data);\n";
-                for (const auto& tbl : view->elements) {
-                    if (tbl->type == "table") {
-                        file << "            refresh" << tbl->label << "();\n";
-                    }
-                }
-                file << "        } catch(err) {}\n";
-                file << "    };\n\n";
-            }
-        }
-    }
-
-    // Delete actions
-    for (const auto& elem : view->elements) {
-        if (elem->type == "table") {
-            bool hasDeleteRoute = false;
-            std::string deleteEndpoint = "";
-            if (!program->apis.empty()) {
-                for (const auto& r : program->apis[0]->routes) {
-                    if (r->method == "DELETE") {
-                        size_t dotPos = r->targetAction.find('.');
-                        std::string targetSlice = (dotPos != std::string::npos) ? r->targetAction.substr(0, dotPos) : "";
-                        if (targetSlice == elem->label) {
-                            hasDeleteRoute = true;
-                            deleteEndpoint = r->path;
-                            break;
-                        }
-                    }
-                }
-            }
-            if (hasDeleteRoute) {
-                std::string keyCol = elem->columns.empty() ? "id" : elem->columns[0];
-                file << "    const handleDelete_" << elem->label << " = async (idVal: any) => {\n";
-                file << "        if (!confirm('¿Seguro que deseas eliminar este registro?')) return;\n";
-                file << "        try {\n";
-                file << "            const res = await fetch('/api/" << elem->label << "', {\n";
-                file << "                method: 'DELETE',\n";
-                file << "                headers: { 'Content-Type': 'application/json' },\n";
-                file << "                body: JSON.stringify({ " << keyCol << ": idVal })\n";
-                file << "            });\n";
-                file << "            refresh" << elem->label << "();\n";
-                file << "        } catch(err) {}\n";
-                file << "    };\n\n";
-            }
-        }
-    }    // Render component
-    file << "    return (\n";
-    if (program->css == "none") {
-        file << "        <>\n";
-        for (const auto& elem : view->elements) {
-            if (elem->type == "input") {
-                std::string cls = elem->className.empty() ? "" : " className=\"" + elem->className + "\"";
-                file << "            <div className=\"max-w-md mx-auto mb-4\">\n";
-                file << "                <label className=\"block text-xs font-semibold uppercase text-gray-400 mb-2\">" << elem->name << "</label>\n";
-                file << "                <input type=\"text\" value={" << elem->name << "} onChange={(e) => set" << elem->name << "(e.target.value)}" << cls << " />\n";
-                file << "            </div>\n";
-            } else if (elem->type == "button") {
-                size_t dotPos = elem->targetAction.find('.');
-                std::string clickHandler = "";
-                if (dotPos != std::string::npos) {
-                    std::string sliceName = elem->targetAction.substr(0, dotPos);
-                    std::string actionName = elem->targetAction.substr(dotPos + 1);
-                    clickHandler = "handle" + sliceName + "_" + actionName;
-                } else {
-                    std::string pathLower = elem->targetAction;
-                    std::transform(pathLower.begin(), pathLower.end(), pathLower.begin(), ::tolower);
-                    clickHandler = "() => navigate('/" + pathLower + "')";
-                }
-                std::string cls = elem->className.empty() ? "" : " className=\"" + elem->className + "\"";
-                file << "            <div className=\"max-w-md mx-auto mb-4\">\n";
-                file << "                <button onClick={" << clickHandler << "}" << cls << ">" << elem->label << "</button>\n";
-                file << "            </div>\n";
-            } else if (elem->type == "html") {
-                std::string cls = elem->className.empty() ? "" : " className=\"" + elem->className + "\"";
-                file << "            <div" << cls << " dangerouslySetInnerHTML={{ __html: `" << elem->label << "` }} />\n";
-            }
-        }
-        
-        file << "            {result && (\n";
-        file << "                <div>\n";
-        file << "                    <div>API Response</div>\n";
-        file << "                    <pre>{JSON.stringify(result, null, 2)}</pre>\n";
-        file << "                </div>\n";
-        file << "            )}\n";
-    } else {
-        file << "        <div className=\"min-h-screen bg-[var(--bg-color)] text-[var(--text-color)] flex flex-col justify-center items-center relative overflow-hidden font-sans\">\n";
-        file << "            <div className=\"absolute w-[300px] h-[300px] bg-gradient-to-r from-[var(--primary-glow)] to-transparent rounded-full top-[10%] left-[15%] opacity-15 blur-[80px]\" />\n";
-        file << "            <div className=\"absolute w-[350px] h-[350px] bg-gradient-to-r from-[var(--secondary-glow)] to-transparent rounded-full bottom-[15%] right-[15%] opacity-15 blur-[80px]\" />\n";
-        file << "            \n";
-        file << "            <main className=\"w-full max-w-[550px] p-8 z-10\">\n";
-        file << "                <section className=\"bg-[var(--card-bg)] backdrop-blur-[20px] border border-[var(--border-color)] rounded-[24px] p-10 shadow-[0_20px_50px_rgba(0,0,0,0.3)]\">\n";
-        file << "                    <div className=\"text-center mb-8\">\n";
-        
-        std::string mainTitle = view->name;
-        std::string subTitle = "Hexagen Compiled UI";
-        for (const auto& elem : view->elements) {
-            if (elem->type == "title") {
-                subTitle = elem->label;
-            }
-        }
-        file << "                        <h1 className=\"text-3xl font-extrabold bg-gradient-to-r from-white to-[var(--primary-glow)] bg-clip-text text-transparent mb-2\">" << mainTitle << "</h1>\n";
-        file << "                        <p className=\"text-sm text-gray-400\">" << subTitle << "</p>\n";
-        file << "                    </div>\n";
-        
-        file << "                    <div className=\"space-y-6\">\n";
-
-        for (const auto& elem : view->elements) {
-            if (elem->type == "input") {
-                std::string cls = elem->className.empty() ? "" : " " + elem->className;
-                file << "                        <div>\n";
-                file << "                            <label className=\"block text-xs font-semibold uppercase text-gray-400 mb-2\">" << elem->name << "</label>\n";
-                file << "                            <input type=\"text\" value={" << elem->name << "} onChange={(e) => set" << elem->name << "(e.target.value)} className=\"w-full bg-white/5 border border-[var(--border-color)] rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[var(--primary-glow)] focus:bg-white/10 transition" << cls << "\" />\n";
-                file << "                        </div>\n";
-            } else if (elem->type == "button") {
-                size_t dotPos = elem->targetAction.find('.');
-                std::string cls = elem->className.empty() ? "" : " " + elem->className;
-                if (dotPos != std::string::npos) {
-                    std::string sliceName = elem->targetAction.substr(0, dotPos);
-                    std::string actionName = elem->targetAction.substr(dotPos + 1);
-                    file << "                        <button onClick={handle" << sliceName << "_" << actionName << "} className=\"w-full bg-gradient-to-r from-[var(--secondary-glow)] to-[var(--primary-glow)] text-[var(--bg-color)] py-4 rounded-xl font-bold hover:scale-[1.02] transition active:scale-[0.98]" << cls << "\">" << elem->label << "</button>\n";
-                } else {
-                    std::string pathLower = elem->targetAction;
-                    std::transform(pathLower.begin(), pathLower.end(), pathLower.begin(), ::tolower);
-                    file << "                        <button onClick={() => navigate('/" << pathLower << "')} className=\"w-full bg-white/5 border border-[var(--border-color)] py-4 rounded-xl font-bold hover:bg-white/10 transition" << cls << "\">" << elem->label << "</button>\n";
-                }
-            } else if (elem->type == "html") {
-                std::string cls = elem->className.empty() ? "" : " className=\"" + elem->className + "\"";
-                file << "                        <div" << cls << " dangerouslySetInnerHTML={{ __html: `" << elem->label << "` }} />\n";
-            }
-        }
-        
-        file << "                    </div>\n";
-
-        file << "                    {result && (\n";
-        file << "                        <div className=\"mt-8 bg-black/25 rounded-xl border border-white/5 p-5\">\n";
-        file << "                            <div className=\"text-xs font-semibold text-[var(--primary-glow)] mb-2 uppercase\">API Response</div>\n";
-        file << "                            <pre className=\"font-mono text-xs text-[#e5e7eb] overflow-x-auto\">{JSON.stringify(result, null, 2)}</pre>\n";
-        file << "                        </div>\n";
-        file << "                    )}\n";
-    }
-
-    for (const auto& elem : view->elements) {
-        if (elem->type == "table") {
-            bool hasDeleteRoute = false;
-            if (!program->apis.empty()) {
-                for (const auto& r : program->apis[0]->routes) {
-                    if (r->method == "DELETE") {
-                        size_t dotPos = r->targetAction.find('.');
-                        std::string targetSlice = (dotPos != std::string::npos) ? r->targetAction.substr(0, dotPos) : "";
-                        if (targetSlice == elem->label) {
-                            hasDeleteRoute = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (program->css == "none") {
-                std::string cls = elem->className.empty() ? "" : " className=\"" + elem->className + "\"";
-                file << "                    <div" << cls << ">\n";
-                file << "                        <table>\n";
-                file << "                            <thead>\n";
-                file << "                                <tr>\n";
-                for (const auto& col : elem->columns) {
-                    file << "                                    <th>" << col << "</th>\n";
-                }
-                if (hasDeleteRoute) {
-                    file << "                                    <th>Acciones</th>\n";
-                }
-                file << "                                </tr>\n";
-                file << "                            </thead>\n";
-                file << "                            <tbody>\n";
-                file << "                                {" << elem->label << "Rows.map((row: any, idx: number) => (\n";
-                file << "                                    <tr key={idx}>\n";
-                for (const auto& col : elem->columns) {
-                    file << "                                        <td>{row." << col << "}</td>\n";
-                }
-                if (hasDeleteRoute) {
-                    std::string keyCol = elem->columns.empty() ? "id" : elem->columns[0];
-                    file << "                                        <td>\n";
-                    file << "                                            <button onClick={() => handleDelete_" << elem->label << "(row." << keyCol << ")}>Eliminar</button>\n";
-                    file << "                                        </td>\n";
-                }
-                file << "                                    </tr>\n";
-                file << "                                ))}\n";
-                file << "                            </tbody>\n";
-                file << "                        </table>\n";
-                file << "                    </div>\n";
-            } else {
-                std::string cls = elem->className.empty() ? "" : " " + elem->className;
-                file << "                    <div className=\"mt-8 bg-black/20 rounded-xl border border-white/10 overflow-hidden" << cls << "\">\n";
-                file << "                        <table className=\"w-full text-left border-collapse\">\n";
-                file << "                            <thead>\n";
-                file << "                                <tr className=\"bg-white/5 text-xs font-semibold text-gray-400 uppercase\">\n";
-                for (const auto& col : elem->columns) {
-                    file << "                                    <th className=\"p-3\">" << col << "</th>\n";
-                }
-                if (hasDeleteRoute) {
-                    file << "                                    <th className=\"p-3\">Acciones</th>\n";
-                }
-                file << "                                </tr>\n";
-                file << "                            </thead>\n";
-                file << "                            <tbody>\n";
-                file << "                                {" << elem->label << "Rows.map((row: any, idx: number) => (\n";
-                file << "                                    <tr key={idx} className=\"border-b border-white/10\">\n";
-                for (const auto& col : elem->columns) {
-                    file << "                                        <td className=\"p-3 text-sm\">{row." << col << "}</td>\n";
-                }
-                if (hasDeleteRoute) {
-                    std::string keyCol = elem->columns.empty() ? "id" : elem->columns[0];
-                    file << "                                        <td className=\"p-3 text-sm\">\n";
-                    file << "                                            <button onClick={() => handleDelete_" << elem->label << "(row." << keyCol << ")} className=\"px-3 py-1 text-xs font-semibold rounded bg-gradient-to-r from-red-500 to-rose-600 text-white hover:scale-105 active:scale-95 transition\">Eliminar</button>\n";
-                    file << "                                        </td>\n";
-                }
-                file << "                                    </tr>\n";
-                file << "                                ))}\n";
-                file << "                            </tbody>\n";
-                file << "                        </table>\n";
-                file << "                    </div>\n";
-            }
-        }
-    }
-
-    if (program->css == "none") {
-        file << "        </>\n";
-    } else {
-        file << "                </section>\n";
-        file << "            </main>\n";
-        file << "        </div>\n";
-    }
-    file << "    );\n";
-    file << "}\n";
-}
-
 std::string CodeGenerator::generateSourceCode(bool includeMain) {
     if (program->target == "desktop") {
         std::ofstream wvFile("webview.h");
@@ -1795,12 +791,15 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     }
     bool hasCors = false;
     bool hasRateLimit = false;
+    bool hasLogger = false;
     int rateLimitLimit = 0;
     int rateLimitWindow = 0;
     if (!program->apis.empty()) {
-        for (const auto& mw : program->apis[0]->middlewares) {
+        for (const auto& mw : program->allMiddlewares()) {
             if (mw->name == "cors") {
                 hasCors = true;
+            } else if (mw->name == "logger") {
+                hasLogger = true;
             } else if (mw->name == "rate_limit") {
                 hasRateLimit = true;
                 if (mw->arguments.size() >= 2) {
@@ -1816,6 +815,11 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     std::stringstream ss;
     ss << "// Generated automatically by Hexagen Framework\n";
     ss << "// Database Engine: " << program->dbType << "\n";
+    if (!program->requiredLibs.empty()) {
+        ss << "// hexagen:requires";
+        for (const auto& lib : program->requiredLibs) ss << " " << lib;
+        ss << "\n";
+    }
     if (program->dbType == "sqlite") {
         ss << "#include <sqlite3.h>\n";
     } else if (program->dbType == "postgres" || program->dbType == "postgresql") {
@@ -1842,6 +846,16 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     ss << "#include <functional>\n";
     ss << "#include <queue>\n";
     ss << "#include <unordered_map>\n";
+    ss << "#include <map>\n";
+    ss << "#include <random>\n";
+    ss << "#include <cstdlib>\n";
+    ss << "#include <ctime>\n";
+    ss << "#include <atomic>\n";
+    if (program->useHttp) {
+        ss << "#include <netdb.h>\n";
+        ss << "#include <openssl/ssl.h>\n";
+        ss << "#include <openssl/err.h>\n";
+    }
     ss << "#include <arpa/inet.h>\n";
     ss << "#include <condition_variable>\n";
     ss << "#include <coroutine>\n";
@@ -1904,37 +918,172 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     }
     ss << "\n";
 
-    ss << "// Asynchronous Job Queue and Worker Pool\n"
-       << "std::queue<std::function<void()>> global_job_queue;\n"
+    ss << "// Asynchronous Job Queue + durability + retry + supervision (OTP/Oban-style)\n"
+       << "std::string base64_encode(const std::string& in);\n"
+       << "std::string base64_decode(const std::string& in);\n"
+       << "std::string getJSONVal(const std::string& json, const std::string& field);\n"
+       << "void dispatch_job(const std::string& name, const std::string& argsJson);\n\n"
+       << "struct PendingJob {\n"
+       << "    std::string id;\n"
+       << "    std::string name;\n"
+       << "    std::string args;\n"
+       << "    int attempts = 0;\n"
+       << "    std::function<void()> run;\n"
+       << "};\n"
+       << "std::queue<PendingJob> global_job_queue;\n"
        << "std::mutex global_job_queue_mutex;\n"
-       << "std::condition_variable global_job_queue_cv;\n\n"
-       << "void enqueue_background_task(std::function<void()> task) {\n"
-       << "    {\n"
-       << "        std::lock_guard<std::mutex> lock(global_job_queue_mutex);\n"
-       << "        global_job_queue.push(task);\n"
-       << "    }\n"
+       << "std::condition_variable global_job_queue_cv;\n"
+       << "std::mutex jobs_file_mutex;\n"
+       << "static const char* JOBS_FILE = \"jobs_pending.jsonl\";\n\n"
+       << "std::string makeJobId() {\n"
+       << "    static long counter = 0;\n"
+       << "    std::lock_guard<std::mutex> lk(jobs_file_mutex);\n"
+       << "    long n = ++counter;\n"
+       << "    auto now = std::chrono::steady_clock::now().time_since_epoch().count();\n"
+       << "    return std::to_string(now) + \"-\" + std::to_string(n);\n"
+       << "}\n\n"
+       << "void persistJob(const std::string& id, const std::string& name, const std::string& args, int attempts) {\n"
+       << "    std::lock_guard<std::mutex> lk(jobs_file_mutex);\n"
+       << "    std::ofstream f(JOBS_FILE, std::ios::app);\n"
+       << "    if (f.is_open()) f << \"{\\\"id\\\":\\\"\" << id << \"\\\",\\\"name\\\":\\\"\" << name\n"
+       << "                        << \"\\\",\\\"args\\\":\\\"\" << base64_encode(args) << \"\\\",\\\"attempts\\\":\" << attempts << \"}\\n\";\n"
+       << "}\n\n"
+       << "void removeJob(const std::string& id) {\n"
+       << "    std::lock_guard<std::mutex> lk(jobs_file_mutex);\n"
+       << "    std::ifstream in(JOBS_FILE);\n"
+       << "    std::vector<std::string> keep; std::string line;\n"
+       << "    while (std::getline(in, line)) { if (line.empty()) continue; if (getJSONVal(line, \"id\") != id) keep.push_back(line); }\n"
+       << "    in.close();\n"
+       << "    std::ofstream out(JOBS_FILE, std::ios::trunc);\n"
+       << "    for (auto& l : keep) out << l << \"\\n\";\n"
+       << "}\n\n"
+       << "void enqueue_persisted_job(const std::string& name, const std::string& args, std::function<void()> run) {\n"
+       << "    std::string id = makeJobId();\n"
+       << "    persistJob(id, name, args, 0);\n"
+       << "    { std::lock_guard<std::mutex> lock(global_job_queue_mutex); global_job_queue.push({id, name, args, 0, run}); }\n"
        << "    global_job_queue_cv.notify_one();\n"
        << "}\n\n"
-       << "void job_worker_thread() {\n"
+       << "void enqueue_background_task(std::function<void()> task) {\n"
+       << "    { std::lock_guard<std::mutex> lock(global_job_queue_mutex); global_job_queue.push({\"\", \"\", \"\", 0, task}); }\n"
+       << "    global_job_queue_cv.notify_one();\n"
+       << "}\n\n"
+       << "void run_job_worker() {\n"
+       << "    const int maxAttempts = 3;\n"
        << "    while (true) {\n"
-       << "        std::function<void()> task;\n"
+       << "        PendingJob job;\n"
        << "        {\n"
        << "            std::unique_lock<std::mutex> lock(global_job_queue_mutex);\n"
        << "            global_job_queue_cv.wait(lock, [] { return !global_job_queue.empty(); });\n"
-       << "            task = global_job_queue.front();\n"
+       << "            job = global_job_queue.front();\n"
        << "            global_job_queue.pop();\n"
        << "        }\n"
-       << "        if (task) {\n"
+       << "        if (!job.run) continue;\n"
+       << "        bool ok = false;\n"
+       << "        for (int attempt = job.attempts + 1; attempt <= maxAttempts && !ok; ++attempt) {\n"
+       << "            try { job.run(); ok = true; }\n"
+       << "            catch (const std::exception& e) {\n"
+       << "                std::cerr << \"[Job] '\" << job.name << \"' attempt \" << attempt << \"/\" << maxAttempts << \" failed: \" << e.what() << std::endl;\n"
+       << "                if (attempt < maxAttempts) std::this_thread::sleep_for(std::chrono::milliseconds(50 * attempt));\n"
+       << "            }\n"
+       << "            catch (...) {\n"
+       << "                std::cerr << \"[Job] '\" << job.name << \"' attempt \" << attempt << \" failed (unknown)\" << std::endl;\n"
+       << "                if (attempt < maxAttempts) std::this_thread::sleep_for(std::chrono::milliseconds(50 * attempt));\n"
+       << "            }\n"
+       << "        }\n"
+       << "        if (!ok) std::cerr << \"[Job] '\" << job.name << \"' permanently failed after \" << maxAttempts << \" attempts\" << std::endl;\n"
+       << "        if (!job.id.empty()) removeJob(job.id);\n"
+       << "    }\n"
+       << "}\n\n"
+       << "// Supervisor: keep N workers alive; restart any that exit unexpectedly.\n"
+       << "void start_job_supervisor(int n) {\n"
+       << "    for (int i = 0; i < n; ++i) {\n"
+       << "        std::thread([i]() {\n"
+       << "            while (true) {\n"
+       << "                std::thread w(run_job_worker);\n"
+       << "                w.join();\n"
+       << "                std::cerr << \"[Supervisor] job worker \" << i << \" exited; restarting\" << std::endl;\n"
+       << "                std::this_thread::sleep_for(std::chrono::milliseconds(100));\n"
+       << "            }\n"
+       << "        }).detach();\n"
+       << "    }\n"
+       << "}\n\n"
+       << "// Crash recovery: replay jobs persisted by a previous run.\n"
+       << "void recover_persisted_jobs() {\n"
+       << "    std::vector<PendingJob> recovered;\n"
+       << "    {\n"
+       << "        std::lock_guard<std::mutex> lk(jobs_file_mutex);\n"
+       << "        std::ifstream in(JOBS_FILE);\n"
+       << "        if (!in.is_open()) return;\n"
+       << "        std::string line;\n"
+       << "        while (std::getline(in, line)) {\n"
+       << "            if (line.empty()) continue;\n"
+       << "            PendingJob j;\n"
+       << "            j.id = getJSONVal(line, \"id\");\n"
+       << "            j.name = getJSONVal(line, \"name\");\n"
+       << "            j.args = base64_decode(getJSONVal(line, \"args\"));\n"
+       << "            j.attempts = std::atoi(getJSONVal(line, \"attempts\").c_str());\n"
+       << "            recovered.push_back(j);\n"
+       << "        }\n"
+       << "    }\n"
+       << "    for (auto& j : recovered) {\n"
+       << "        std::string nm = j.name, ar = j.args;\n"
+       << "        j.run = [nm, ar]() { dispatch_job(nm, ar); };\n"
+       << "        { std::lock_guard<std::mutex> lock(global_job_queue_mutex); global_job_queue.push(j); }\n"
+       << "        global_job_queue_cv.notify_one();\n"
+       << "    }\n"
+       << "    if (!recovered.empty()) std::cerr << \"[Supervisor] recovered \" << recovered.size() << \" persisted job(s)\" << std::endl;\n"
+       << "}\n\n";
+
+    // GenServer: a stateful in-memory process (actor model). Each instance owns a
+    // dedicated thread with a message mailbox; state is mutated only by that thread,
+    // so it is safe to cast() messages concurrently. Handler exceptions are isolated.
+    ss << "template <typename State>\n"
+       << "class GenServer {\n"
+       << "public:\n"
+       << "    using Handler = std::function<void(State&, const std::string&)>;\n"
+       << "    GenServer(State initial, Handler handler)\n"
+       << "        : state_(initial), handler_(handler), running_(true) {\n"
+       << "        worker_ = std::thread([this]() { loop(); });\n"
+       << "    }\n"
+       << "    ~GenServer() { stop(); }\n"
+       << "    void cast(const std::string& msg) {\n"
+       << "        { std::lock_guard<std::mutex> lk(mtx_); mailbox_.push(msg); }\n"
+       << "        cv_.notify_one();\n"
+       << "    }\n"
+       << "    State get() { std::lock_guard<std::mutex> lk(stateMtx_); return state_; }\n"
+       << "    void stop() {\n"
+       << "        if (!running_.exchange(false)) return;\n"
+       << "        cv_.notify_one();\n"
+       << "        if (worker_.joinable()) worker_.join();\n"
+       << "    }\n"
+       << "private:\n"
+       << "    void loop() {\n"
+       << "        while (running_) {\n"
+       << "            std::string msg;\n"
+       << "            {\n"
+       << "                std::unique_lock<std::mutex> lk(mtx_);\n"
+       << "                cv_.wait(lk, [this]() { return !mailbox_.empty() || !running_; });\n"
+       << "                if (!running_ && mailbox_.empty()) break;\n"
+       << "                msg = mailbox_.front(); mailbox_.pop();\n"
+       << "            }\n"
        << "            try {\n"
-       << "                task();\n"
+       << "                std::lock_guard<std::mutex> lk(stateMtx_);\n"
+       << "                handler_(state_, msg);\n"
        << "            } catch (const std::exception& e) {\n"
-       << "                std::cerr << \"[Job Worker Error] \" << e.what() << std::endl;\n"
+       << "                std::cerr << \"[GenServer] handler error: \" << e.what() << std::endl;\n"
        << "            } catch (...) {\n"
-       << "                std::cerr << \"[Job Worker Error] Unknown error\" << std::endl;\n"
+       << "                std::cerr << \"[GenServer] handler error (unknown)\" << std::endl;\n"
        << "            }\n"
        << "        }\n"
        << "    }\n"
-       << "}\n\n";
+       << "    State state_;\n"
+       << "    Handler handler_;\n"
+       << "    std::queue<std::string> mailbox_;\n"
+       << "    std::mutex mtx_, stateMtx_;\n"
+       << "    std::condition_variable cv_;\n"
+       << "    std::atomic<bool> running_;\n"
+       << "    std::thread worker_;\n"
+       << "};\n\n";
 
     ss << "// IP-based Rate Limiting Middleware State & Checker\n"
        << "struct RateLimitEntry {\n"
@@ -2008,6 +1157,125 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "    return \"\";\n"
        << "}\n\n";
 
+    // Split a flat JSON array string "[{..},{..}]" into top-level object strings,
+    // respecting quotes/escapes. Used by association preloading.
+    ss << "std::vector<std::string> __splitJsonObjects(const std::string& arr) {\n"
+       << "    std::vector<std::string> out;\n"
+       << "    int depth = 0; bool inStr = false; bool esc = false; size_t start = std::string::npos;\n"
+       << "    for (size_t i = 0; i < arr.size(); ++i) {\n"
+       << "        char c = arr[i];\n"
+       << "        if (inStr) {\n"
+       << "            if (esc) esc = false;\n"
+       << "            else if (c == '\\\\') esc = true;\n"
+       << "            else if (c == '\"') inStr = false;\n"
+       << "            continue;\n"
+       << "        }\n"
+       << "        if (c == '\"') { inStr = true; continue; }\n"
+       << "        if (c == '{') { if (depth == 0) start = i; depth++; }\n"
+       << "        else if (c == '}') { depth--; if (depth == 0 && start != std::string::npos) { out.push_back(arr.substr(start, i - start + 1)); start = std::string::npos; } }\n"
+       << "    }\n"
+       << "    return out;\n"
+       << "}\n\n";
+
+    // Outbound HTTP(S) client (enabled via `config { http: true }`). Lets actions
+    // call external REST APIs/SDKs (Stripe, PayPal, Gemini, ...). HTTPS via OpenSSL.
+    if (program->useHttp) {
+        ss << "struct HttpResponse { long status = 0; std::string body; std::string error; };\n\n"
+           << "HttpResponse http_request(const std::string& method, const std::string& url,\n"
+           << "                          const std::vector<std::string>& headers = {},\n"
+           << "                          const std::string& reqBody = \"\") {\n"
+           << "    HttpResponse resp;\n"
+           << "    bool https = false; std::string u = url;\n"
+           << "    if (u.rfind(\"https://\", 0) == 0) { https = true; u = u.substr(8); }\n"
+           << "    else if (u.rfind(\"http://\", 0) == 0) { u = u.substr(7); }\n"
+           << "    std::string host, path = \"/\", portStr = https ? \"443\" : \"80\";\n"
+           << "    size_t slash = u.find('/');\n"
+           << "    std::string hostport = (slash == std::string::npos) ? u : u.substr(0, slash);\n"
+           << "    if (slash != std::string::npos) path = u.substr(slash);\n"
+           << "    size_t colon = hostport.find(':');\n"
+           << "    if (colon != std::string::npos) { host = hostport.substr(0, colon); portStr = hostport.substr(colon + 1); }\n"
+           << "    else host = hostport;\n"
+           << "    struct addrinfo hints; std::memset(&hints, 0, sizeof(hints));\n"
+           << "    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;\n"
+           << "    struct addrinfo* res = nullptr;\n"
+           << "    if (getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res) != 0 || !res) { resp.error = \"dns failed\"; return resp; }\n"
+           << "    int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);\n"
+           << "    if (sock < 0) { freeaddrinfo(res); resp.error = \"socket failed\"; return resp; }\n"
+           << "    if (connect(sock, res->ai_addr, res->ai_addrlen) < 0) { close(sock); freeaddrinfo(res); resp.error = \"connect failed\"; return resp; }\n"
+           << "    freeaddrinfo(res);\n"
+           << "    std::string req = method + \" \" + path + \" HTTP/1.1\\r\\n\";\n"
+           << "    req += \"Host: \" + host + \"\\r\\n\";\n"
+           << "    req += \"User-Agent: Hexagen/1.0\\r\\n\";\n"
+           << "    req += \"Connection: close\\r\\n\";\n"
+           << "    bool hasCT = false;\n"
+           << "    for (const auto& h : headers) { req += h + \"\\r\\n\"; std::string lh = h; for (char& c : lh) c = (char)tolower(c); if (lh.rfind(\"content-type\", 0) == 0) hasCT = true; }\n"
+           << "    if (!reqBody.empty()) { req += \"Content-Length: \" + std::to_string(reqBody.size()) + \"\\r\\n\"; if (!hasCT) req += \"Content-Type: application/json\\r\\n\"; }\n"
+           << "    req += \"\\r\\n\" + reqBody;\n"
+           << "    std::string raw;\n"
+           << "    if (https) {\n"
+           << "        static std::once_flag sslInit;\n"
+           << "        std::call_once(sslInit, []() { SSL_library_init(); SSL_load_error_strings(); });\n"
+           << "        SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());\n"
+           << "        if (!ctx) { close(sock); resp.error = \"ssl ctx\"; return resp; }\n"
+           << "        SSL* ssl = SSL_new(ctx);\n"
+           << "        SSL_set_tlsext_host_name(ssl, host.c_str());\n"
+           << "        SSL_set_fd(ssl, sock);\n"
+           << "        if (SSL_connect(ssl) != 1) { SSL_free(ssl); SSL_CTX_free(ctx); close(sock); resp.error = \"tls handshake failed\"; return resp; }\n"
+           << "        SSL_write(ssl, req.data(), (int)req.size());\n"
+           << "        char buf[4096]; int n;\n"
+           << "        while ((n = SSL_read(ssl, buf, sizeof(buf))) > 0) raw.append(buf, n);\n"
+           << "        SSL_shutdown(ssl); SSL_free(ssl); SSL_CTX_free(ctx);\n"
+           << "    } else {\n"
+           << "        send(sock, req.data(), req.size(), 0);\n"
+           << "        char buf[4096]; ssize_t n;\n"
+           << "        while ((n = recv(sock, buf, sizeof(buf), 0)) > 0) raw.append(buf, n);\n"
+           << "    }\n"
+           << "    close(sock);\n"
+           << "    size_t lineEnd = raw.find(\"\\r\\n\");\n"
+           << "    if (lineEnd != std::string::npos) {\n"
+           << "        std::string statusLine = raw.substr(0, lineEnd);\n"
+           << "        size_t sp = statusLine.find(' ');\n"
+           << "        if (sp != std::string::npos) resp.status = atol(statusLine.substr(sp + 1).c_str());\n"
+           << "    }\n"
+           << "    size_t hdrEnd = raw.find(\"\\r\\n\\r\\n\");\n"
+           << "    std::string bodyRaw = (hdrEnd != std::string::npos) ? raw.substr(hdrEnd + 4) : \"\";\n"
+           << "    std::string headerPart = (hdrEnd != std::string::npos) ? raw.substr(0, hdrEnd) : raw;\n"
+           << "    std::string lower = headerPart; for (char& c : lower) c = (char)tolower(c);\n"
+           << "    if (lower.find(\"transfer-encoding: chunked\") != std::string::npos) {\n"
+           << "        std::string decoded; size_t p = 0;\n"
+           << "        while (p < bodyRaw.size()) {\n"
+           << "            size_t cl = bodyRaw.find(\"\\r\\n\", p); if (cl == std::string::npos) break;\n"
+           << "            long sz = strtol(bodyRaw.substr(p, cl - p).c_str(), nullptr, 16);\n"
+           << "            if (sz <= 0) break;\n"
+           << "            p = cl + 2; if (p + (size_t)sz > bodyRaw.size()) break;\n"
+           << "            decoded.append(bodyRaw, p, sz); p += sz + 2;\n"
+           << "        }\n"
+           << "        resp.body = decoded;\n"
+           << "    } else { resp.body = bodyRaw; }\n"
+           << "    return resp;\n"
+           << "}\n\n"
+           << "HttpResponse http_get(const std::string& url, const std::vector<std::string>& headers = {}) { return http_request(\"GET\", url, headers, \"\"); }\n"
+           << "HttpResponse http_post(const std::string& url, const std::string& body, const std::vector<std::string>& headers = {}) { return http_request(\"POST\", url, headers, body); }\n\n";
+    }
+
+    // Basic email format validator used by changeset format(field, email) rules.
+    ss << "bool isValidEmail(const std::string& s) {\n"
+       << "    size_t at = s.find('@');\n"
+       << "    if (at == std::string::npos || at == 0) return false;\n"
+       << "    size_t dot = s.find('.', at);\n"
+       << "    if (dot == std::string::npos || dot == at + 1) return false;\n"
+       << "    if (dot + 1 >= s.size()) return false;\n"
+       << "    if (s.find(' ') != std::string::npos) return false;\n"
+       << "    return true;\n"
+       << "}\n\n";
+
+    // Dynamic route matcher: compares the request's "METHOD /target" line against a
+    // route pattern that may contain :params (e.g. /api/leads/:id), filling the
+    // captured params map. Query string is ignored. Returns false on method or
+    // structural mismatch.
+    // Source of truth: src/runtime/router.hpp (real C++), amalgamated into RT_ROUTER.
+    ss << RT_ROUTER << "\n";
+
 
     // Global environment loader and helpers
     ss << "// Global environment loader and helpers\n"
@@ -2057,7 +1325,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "        return defaultVal;\n"
        << "    }\n"
        << "}\n\n"
-       << "std::string sha256(const std::string& str) {\n"
+       << "std::string sha256_bytes(const std::string& str) {\n"
        << "    unsigned int h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;\n"
        << "    unsigned int h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;\n"
        << "    unsigned int k[64] = {\n"
@@ -2115,10 +1383,20 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "        h0 += a; h1 += b; h2 += c; h3 += d;\n"
        << "        h4 += e; h5 += f; h6 += g; h7 += h;\n"
        << "    }\n"
-       << "    std::stringstream ss_hex;\n"
-       << "    ss_hex << std::hex << std::setfill('0');\n"
-       << "    ss_hex << std::setw(8) << h0 << std::setw(8) << h1 << std::setw(8) << h2 << std::setw(8) << h3\n"
-       << "           << std::setw(8) << h4 << std::setw(8) << h5 << std::setw(8) << h6 << std::setw(8) << h7;\n"
+       << "    std::string out; out.resize(32);\n"
+       << "    unsigned int hs[8] = {h0, h1, h2, h3, h4, h5, h6, h7};\n"
+       << "    for (int i = 0; i < 8; ++i) {\n"
+       << "        out[i*4]   = (char)((hs[i] >> 24) & 0xFF);\n"
+       << "        out[i*4+1] = (char)((hs[i] >> 16) & 0xFF);\n"
+       << "        out[i*4+2] = (char)((hs[i] >> 8) & 0xFF);\n"
+       << "        out[i*4+3] = (char)(hs[i] & 0xFF);\n"
+       << "    }\n"
+       << "    return out;\n"
+       << "}\n\n"
+       << "std::string sha256(const std::string& str) {\n"
+       << "    std::string d = sha256_bytes(str);\n"
+       << "    std::stringstream ss_hex; ss_hex << std::hex << std::setfill('0');\n"
+       << "    for (unsigned char c : d) ss_hex << std::setw(2) << (int)c;\n"
        << "    return ss_hex.str();\n"
        << "}\n\n"
        << "static const std::string b64_chars = \n"
@@ -2177,21 +1455,91 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "    }\n"
        << "    return base64_decode(in);\n"
        << "}\n\n"
+       // Constant-time string comparison to avoid timing attacks on token/hash checks.
+       << "bool constTimeEq(const std::string& a, const std::string& b) {\n"
+       << "    if (a.size() != b.size()) return false;\n"
+       << "    unsigned char diff = 0;\n"
+       << "    for (size_t i = 0; i < a.size(); ++i) diff |= (unsigned char)(a[i] ^ b[i]);\n"
+       << "    return diff == 0;\n"
+       << "}\n\n"
+       // HMAC-SHA256 (RFC 2104) built on the raw SHA-256 digest. Block size = 64 bytes.
+       << "std::string hmac_sha256(const std::string& key, const std::string& msg) {\n"
+       << "    std::string k = key;\n"
+       << "    if (k.size() > 64) k = sha256_bytes(k);\n"
+       << "    if (k.size() < 64) k.resize(64, '\\0');\n"
+       << "    std::string o_pad(64, 0), i_pad(64, 0);\n"
+       << "    for (int i = 0; i < 64; ++i) {\n"
+       << "        o_pad[i] = (char)((unsigned char)k[i] ^ 0x5c);\n"
+       << "        i_pad[i] = (char)((unsigned char)k[i] ^ 0x36);\n"
+       << "    }\n"
+       << "    return sha256_bytes(o_pad + sha256_bytes(i_pad + msg));\n"
+       << "}\n\n"
+       // PBKDF2-HMAC-SHA256 (RFC 8018) key derivation.
+       << "std::string pbkdf2_sha256(const std::string& password, const std::string& salt, int iterations, int dkLen) {\n"
+       << "    std::string dk;\n"
+       << "    int hLen = 32;\n"
+       << "    int blocks = (dkLen + hLen - 1) / hLen;\n"
+       << "    for (int b = 1; b <= blocks; ++b) {\n"
+       << "        std::string saltBlock = salt;\n"
+       << "        saltBlock.push_back((char)((b >> 24) & 0xFF));\n"
+       << "        saltBlock.push_back((char)((b >> 16) & 0xFF));\n"
+       << "        saltBlock.push_back((char)((b >> 8) & 0xFF));\n"
+       << "        saltBlock.push_back((char)(b & 0xFF));\n"
+       << "        std::string u = hmac_sha256(password, saltBlock);\n"
+       << "        std::string t = u;\n"
+       << "        for (int i = 1; i < iterations; ++i) {\n"
+       << "            u = hmac_sha256(password, u);\n"
+       << "            for (size_t j = 0; j < t.size(); ++j) t[j] = (char)((unsigned char)t[j] ^ (unsigned char)u[j]);\n"
+       << "        }\n"
+       << "        dk += t;\n"
+       << "    }\n"
+       << "    return dk.substr(0, dkLen);\n"
+       << "}\n\n"
+       // Hash a password with a random 16-byte salt. Output: pbkdf2$iters$saltB64$hashB64.
+       << "std::string hashPassword(const std::string& password) {\n"
+       << "    int iterations = 100000;\n"
+       << "    std::string salt; salt.resize(16);\n"
+       << "    std::random_device rd;\n"
+       << "    for (int i = 0; i < 16; ++i) salt[i] = (char)(rd() & 0xFF);\n"
+       << "    std::string dk = pbkdf2_sha256(password, salt, iterations, 32);\n"
+       << "    return \"pbkdf2$\" + std::to_string(iterations) + \"$\" + base64_encode(salt) + \"$\" + base64_encode(dk);\n"
+       << "}\n\n"
+       // Verify a password against a stored hash. Falls back to legacy sha256(hex) so
+       // existing user records keep working after upgrading the framework.
+       << "bool verifyPassword(const std::string& password, const std::string& stored) {\n"
+       << "    if (stored.rfind(\"pbkdf2$\", 0) == 0) {\n"
+       << "        size_t p1 = stored.find('$', 7);\n"
+       << "        if (p1 == std::string::npos) return false;\n"
+       << "        size_t p2 = stored.find('$', p1 + 1);\n"
+       << "        if (p2 == std::string::npos) return false;\n"
+       << "        int iterations = std::atoi(stored.substr(7, p1 - 7).c_str());\n"
+       << "        std::string salt = base64_decode(stored.substr(p1 + 1, p2 - p1 - 1));\n"
+       << "        std::string expected = base64_decode(stored.substr(p2 + 1));\n"
+       << "        std::string dk = pbkdf2_sha256(password, salt, iterations, (int)expected.size());\n"
+       << "        return constTimeEq(dk, expected);\n"
+       << "    }\n"
+       << "    return constTimeEq(sha256(password), stored);\n"
+       << "}\n\n"
+       // Standard JWT (HS256): base64url(header).base64url(payload).base64url(HMAC).
        << "std::string generateSessionToken(const std::string& payload) {\n"
        << "    std::string secret = getEnvOr(\"JWT_SECRET\", \"hexagen_secret_key_2026\");\n"
-       << "    std::string encodedPayload = base64url_encode(payload);\n"
-       << "    std::string signature = sha256(encodedPayload + \".\" + secret);\n"
-       << "    return encodedPayload + \".\" + signature;\n"
+       << "    std::string encHeader = base64url_encode(\"{\\\"alg\\\":\\\"HS256\\\",\\\"typ\\\":\\\"JWT\\\"}\");\n"
+       << "    std::string encPayload = base64url_encode(payload);\n"
+       << "    std::string signingInput = encHeader + \".\" + encPayload;\n"
+       << "    std::string signature = base64url_encode(hmac_sha256(secret, signingInput));\n"
+       << "    return signingInput + \".\" + signature;\n"
        << "}\n\n"
        << "bool verifySessionToken(const std::string& token, std::string& payloadOut) {\n"
        << "    std::string secret = getEnvOr(\"JWT_SECRET\", \"hexagen_secret_key_2026\");\n"
-       << "    size_t dot = token.find('.');\n"
-       << "    if (dot == std::string::npos) return false;\n"
-       << "    std::string payload = token.substr(0, dot);\n"
-       << "    std::string signature = token.substr(dot + 1);\n"
-       << "    std::string expectedSignature = sha256(payload + \".\" + secret);\n"
-       << "    if (signature != expectedSignature) return false;\n"
-       << "    payloadOut = base64url_decode(payload);\n"
+       << "    size_t dot1 = token.find('.');\n"
+       << "    if (dot1 == std::string::npos) return false;\n"
+       << "    size_t dot2 = token.find('.', dot1 + 1);\n"
+       << "    if (dot2 == std::string::npos) return false;\n"
+       << "    std::string signingInput = token.substr(0, dot2);\n"
+       << "    std::string signature = token.substr(dot2 + 1);\n"
+       << "    std::string expected = base64url_encode(hmac_sha256(secret, signingInput));\n"
+       << "    if (!constTimeEq(signature, expected)) return false;\n"
+       << "    payloadOut = base64url_decode(token.substr(dot1 + 1, dot2 - dot1 - 1));\n"
        << "    return true;\n"
        << "}\n\n"
        << "std::string getHeaderValue(const std::string& req, const std::string& headerName) {\n"
@@ -2450,6 +1798,83 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "        }\n"
        << "    }\n"
        << "}\n\n"
+       // ---- PubSub: topic-based channels over WebSocket ----
+       << "std::map<std::string, std::set<int>> ws_topics;\n"
+       << "std::mutex ws_topics_mutex;\n\n"
+       << "void subscribe_topic(const std::string& topic, int fd) {\n"
+       << "    std::lock_guard<std::mutex> lk(ws_topics_mutex);\n"
+       << "    ws_topics[topic].insert(fd);\n"
+       << "}\n\n"
+       << "void unsubscribe_all_topics(int fd) {\n"
+       << "    std::lock_guard<std::mutex> lk(ws_topics_mutex);\n"
+       << "    for (auto& kv : ws_topics) kv.second.erase(fd);\n"
+       << "}\n\n"
+       << "int publish_topic(const std::string& topic, const std::string& message) {\n"
+       << "    std::vector<int> targets;\n"
+       << "    { std::lock_guard<std::mutex> lk(ws_topics_mutex);\n"
+       << "      auto it = ws_topics.find(topic);\n"
+       << "      if (it != ws_topics.end()) targets.assign(it->second.begin(), it->second.end()); }\n"
+       << "    int sent = 0;\n"
+       << "    for (int fd : targets) { sendWebSocketFrame(fd, message); sent++; }\n"
+       << "    return sent;\n"
+       << "}\n\n"
+       // ---- Server-side DOM diffing (region-based, minimal patches) ----
+       // Live regions are delimited in templates by <!--hg:NAME--> ... <!--/hg:NAME-->.
+       // Only regions whose inner content changed are emitted as patches.
+       << "std::map<std::string, std::string> extractLiveRegions(const std::string& html) {\n"
+       << "    std::map<std::string, std::string> regions;\n"
+       << "    size_t pos = 0;\n"
+       << "    const std::string open = \"<!--hg:\";\n"
+       << "    while ((pos = html.find(open, pos)) != std::string::npos) {\n"
+       << "        size_t nameStart = pos + open.size();\n"
+       << "        size_t nameEnd = html.find(\"-->\", nameStart);\n"
+       << "        if (nameEnd == std::string::npos) break;\n"
+       << "        std::string name = html.substr(nameStart, nameEnd - nameStart);\n"
+       << "        size_t contentStart = nameEnd + 3;\n"
+       << "        std::string close = \"<!--/hg:\" + name + \"-->\";\n"
+       << "        size_t contentEnd = html.find(close, contentStart);\n"
+       << "        if (contentEnd == std::string::npos) { pos = contentStart; continue; }\n"
+       << "        regions[name] = html.substr(contentStart, contentEnd - contentStart);\n"
+       << "        pos = contentEnd + close.size();\n"
+       << "    }\n"
+       << "    return regions;\n"
+       << "}\n\n"
+       << "std::string jsonEscape(const std::string& s) {\n"
+       << "    std::string o; o.reserve(s.size() + 8);\n"
+       << "    for (char c : s) {\n"
+       << "        switch (c) {\n"
+       << "            case '\"': o += \"\\\\\\\"\"; break;\n"
+       << "            case '\\\\': o += \"\\\\\\\\\"; break;\n"
+       << "            case '\\n': o += \"\\\\n\"; break;\n"
+       << "            case '\\r': o += \"\\\\r\"; break;\n"
+       << "            case '\\t': o += \"\\\\t\"; break;\n"
+       << "            default: o += c;\n"
+       << "        }\n"
+       << "    }\n"
+       << "    return o;\n"
+       << "}\n\n"
+       << "std::string computeDomPatches(const std::string& oldHtml, const std::string& newHtml) {\n"
+       << "    auto oldR = extractLiveRegions(oldHtml);\n"
+       << "    auto newR = extractLiveRegions(newHtml);\n"
+       << "    std::stringstream js;\n"
+       << "    js << \"{\\\"type\\\":\\\"patch\\\",\\\"patches\\\":[\";\n"
+       << "    bool first = true;\n"
+       << "    for (auto& kv : newR) {\n"
+       << "        auto oit = oldR.find(kv.first);\n"
+       << "        if (oit == oldR.end() || oit->second != kv.second) {\n"
+       << "            if (!first) js << \",\";\n"
+       << "            first = false;\n"
+       << "            js << \"{\\\"id\\\":\\\"\" << jsonEscape(kv.first) << \"\\\",\\\"html\\\":\\\"\" << jsonEscape(kv.second) << \"\\\"}\";\n"
+       << "        }\n"
+       << "    }\n"
+       << "    js << \"]}\";\n"
+       << "    return js.str();\n"
+       << "}\n\n"
+       << "int publish_dom_patch(const std::string& oldHtml, const std::string& newHtml) {\n"
+       << "    std::string patch = computeDomPatches(oldHtml, newHtml);\n"
+       << "    broadcast_ws_message(patch);\n"
+       << "    return (int)patch.size();\n"
+       << "}\n\n"
        << "bool readWebSocketFrame(int client_fd, std::string& out_message) {\n"
        << "    unsigned char header[2];\n"
        << "    int n = recv(client_fd, header, 2, 0);\n"
@@ -2531,8 +1956,45 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         << "}\n\n";
 
         // Generate database connections helpers
+    // Generic thread-safe connection pool reused across concurrent requests,
+    // avoiding a fresh connect/disconnect per query under load. Pool size is
+    // configurable via DB_POOL_SIZE (default 8).
+    if (program->dbType == "sqlite" || program->dbType == "postgres" ||
+        program->dbType == "postgresql" || program->dbType == "mysql") {
+        ss << "template <typename T>\n"
+           << "class ConnPool {\n"
+           << "public:\n"
+           << "    void init(std::function<T()> f, int maxSz) { factory_ = f; maxSize_ = (maxSz > 0 ? maxSz : 1); }\n"
+           << "    T acquire() {\n"
+           << "        std::unique_lock<std::mutex> lk(mtx_);\n"
+           << "        if (!idle_.empty()) { T c = idle_.front(); idle_.pop(); return c; }\n"
+           << "        if (created_ < maxSize_) {\n"
+           << "            created_++;\n"
+           << "            lk.unlock();\n"
+           << "            T c = factory_();\n"
+           << "            if (!c) { std::lock_guard<std::mutex> g(mtx_); created_--; }\n"
+           << "            return c;\n"
+           << "        }\n"
+           << "        cv_.wait(lk, [&]{ return !idle_.empty(); });\n"
+           << "        T c = idle_.front(); idle_.pop(); return c;\n"
+           << "    }\n"
+           << "    void release(T c) {\n"
+           << "        if (!c) return;\n"
+           << "        std::lock_guard<std::mutex> lk(mtx_);\n"
+           << "        idle_.push(c);\n"
+           << "        cv_.notify_one();\n"
+           << "    }\n"
+           << "private:\n"
+           << "    std::queue<T> idle_;\n"
+           << "    std::mutex mtx_;\n"
+           << "    std::condition_variable cv_;\n"
+           << "    std::function<T()> factory_;\n"
+           << "    int maxSize_ = 8;\n"
+           << "    int created_ = 0;\n"
+           << "};\n\n";
+    }
     if (program->dbType == "sqlite") {
-        ss << "sqlite3* getSQLiteConn() {\n"
+        ss << "sqlite3* createSQLiteConn() {\n"
            << "    std::string dbName = getEnvOr(\"DB_NAME\", \"vortex_db.db\");\n"
            << "    sqlite3* db = nullptr;\n"
            << "    int rc = sqlite3_open(dbName.c_str(), &db);\n"
@@ -2542,9 +2004,15 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
            << "        return nullptr;\n"
            << "    }\n"
            << "    return db;\n"
-           << "}\n\n";
+           << "}\n\n"
+           << "ConnPool<sqlite3*>& sqlitePool() {\n"
+           << "    static ConnPool<sqlite3*>* p = []{ auto* x = new ConnPool<sqlite3*>(); x->init(createSQLiteConn, std::atoi(getEnvOr(\"DB_POOL_SIZE\", \"8\"))); return x; }();\n"
+           << "    return *p;\n"
+           << "}\n"
+           << "sqlite3* getSQLiteConn() { return sqlitePool().acquire(); }\n"
+           << "void releaseSQLiteConn(sqlite3* c) { sqlitePool().release(c); }\n\n";
     } else if (program->dbType == "postgres" || program->dbType == "postgresql") {
-        ss << "PGconn* getPGConn() {\n"
+        ss << "PGconn* createPGConn() {\n"
            << "    if (!std::getenv(\"DB_HOST\") && !std::getenv(\"DB_USER\")) return nullptr;\n"
            << "    std::string conninfo = \"host=\" + std::string(getEnvOr(\"DB_HOST\", \"localhost\")) +\n"
            << "                           \" port=\" + std::string(getEnvOr(\"DB_PORT\", \"5432\")) +\n"
@@ -2558,9 +2026,15 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
            << "        return nullptr;\n"
            << "    }\n"
            << "    return conn;\n"
-           << "}\n\n";
+           << "}\n\n"
+           << "ConnPool<PGconn*>& pgPool() {\n"
+           << "    static ConnPool<PGconn*>* p = []{ auto* x = new ConnPool<PGconn*>(); x->init(createPGConn, std::atoi(getEnvOr(\"DB_POOL_SIZE\", \"8\"))); return x; }();\n"
+           << "    return *p;\n"
+           << "}\n"
+           << "PGconn* getPGConn() { return pgPool().acquire(); }\n"
+           << "void releasePGConn(PGconn* c) { pgPool().release(c); }\n\n";
     } else if (program->dbType == "mysql") {
-        ss << "MYSQL* getMySQLConn() {\n"
+        ss << "MYSQL* createMySQLConn() {\n"
            << "    if (!std::getenv(\"DB_HOST\") && !std::getenv(\"DB_USER\")) return nullptr;\n"
            << "    MYSQL* conn = mysql_init(nullptr);\n"
            << "    if (!conn) {\n"
@@ -2579,7 +2053,13 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
            << "        return nullptr;\n"
            << "    }\n"
            << "    return conn;\n"
-           << "}\n\n";
+           << "}\n\n"
+           << "ConnPool<MYSQL*>& mysqlPool() {\n"
+           << "    static ConnPool<MYSQL*>* p = []{ auto* x = new ConnPool<MYSQL*>(); x->init(createMySQLConn, std::atoi(getEnvOr(\"DB_POOL_SIZE\", \"8\"))); return x; }();\n"
+           << "    return *p;\n"
+           << "}\n"
+           << "MYSQL* getMySQLConn() { return mysqlPool().acquire(); }\n"
+           << "void releaseMySQLConn(MYSQL* c) { mysqlPool().release(c); }\n\n";
     }
 
     // initDatabase()
@@ -2605,7 +2085,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                << "            sqlite3_exec(db, q.c_str(), nullptr, nullptr, &errMsg);\n"
                << "        }\n";
         }
-        ss << "        sqlite3_close(db);\n"
+        ss << "        releaseSQLiteConn(db);\n"
            << "    }\n";
     } else if (dbType == "postgres" || dbType == "postgresql") {
         ss << "    PGconn* conn = getPGConn();\n"
@@ -2626,7 +2106,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                << "            PQclear(res);\n"
                << "        }\n";
         }
-        ss << "        PQfinish(conn);\n"
+        ss << "        releasePGConn(conn);\n"
            << "    }\n";
     } else if (dbType == "mysql") {
         ss << "    MYSQL* conn = getMySQLConn();\n"
@@ -2646,7 +2126,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                << "            mysql_query(conn, q.c_str());\n"
                << "        }\n";
         }
-        ss << "        mysql_close(conn);\n"
+        ss << "        releaseMySQLConn(conn);\n"
            << "    }\n";
     } else {
         ss << "    // No init needed for JSONL\n";
@@ -2658,8 +2138,65 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
     }
     if (!program->jobs.empty()) ss << "\n";
 
+    // Persistence runtime (Storage strategy). Source of truth:
+    // src/runtime/storage.hpp, amalgamated into RT_STORAGE. Emitted before slices
+    // so their generated methods can delegate to getStorage().
+    ss << RT_STORAGE << "\n";
+    // SQLite backend registers itself as the active storage (sqlite builds only).
+    if (program->dbType == "sqlite") {
+        ss << RT_STORAGE_SQLITE << "\n";
+    }
+
     for (const auto& slice : program->slices) {
         ss << generateSlice(slice) << "\n";
+    }
+
+    // -------------------------------------------------------------
+    // Association preloading (anti N+1). Emitted AFTER all slice
+    // classes so cross-slice static calls resolve. For each slice
+    // with relation() fields, applyPreloads_<Slice> embeds related
+    // records (loaded once) when the request carries ?_preload=field.
+    // Backend-agnostic: operates on each slice's getAllAsJSON output.
+    // -------------------------------------------------------------
+    ss << "// Association preloading helpers\n";
+    for (const auto& slice : program->slices) {
+        bool hasRel = false;
+        for (const auto& f : slice->fields) if (f->type == DataType::RELATION && !f->relatedSlice.empty()) hasRel = true;
+        if (!hasRel) continue;
+
+        ss << "std::string applyPreloads_" << slice->name << "(const std::string& arr, const std::string& req) {\n";
+        ss << "    std::string pre = getQueryParam(req, \"_preload\");\n";
+        ss << "    if (pre.empty()) return arr;\n";
+        ss << "    std::string preKey = \",\" + pre + \",\";\n";
+        ss << "    std::vector<std::string> objs = __splitJsonObjects(arr);\n";
+        for (const auto& f : slice->fields) {
+            if (f->type != DataType::RELATION || f->relatedSlice.empty()) continue;
+            // Determine the related slice's key field: prefer a field named "id".
+            std::string keyField = "id";
+            for (const auto& rs : program->slices) {
+                if (rs->name == f->relatedSlice) {
+                    bool hasId = false;
+                    for (const auto& rf : rs->fields) if (rf->name == "id") hasId = true;
+                    if (!hasId && !rs->fields.empty()) keyField = rs->fields[0]->name;
+                }
+            }
+            ss << "    if (preKey.find(\"," << f->name << ",\") != std::string::npos) {\n";
+            ss << "        std::map<std::string, std::string> rel;\n";
+            ss << "        std::vector<std::string> robjs = __splitJsonObjects(" << f->relatedSlice << "::getAllAsJSON(\"\"));\n";
+            ss << "        for (auto& ro : robjs) rel[getJSONVal(ro, \"" << keyField << "\")] = ro;\n";
+            ss << "        for (auto& o : objs) {\n";
+            ss << "            std::string fk = getJSONVal(o, \"" << f->name << "\");\n";
+            ss << "            std::string emb = rel.count(fk) ? rel[fk] : std::string(\"null\");\n";
+            ss << "            size_t lb = o.rfind('}');\n";
+            ss << "            if (lb != std::string::npos) o = o.substr(0, lb) + \",\\\"" << f->name << "_data\\\":\" + emb + \"}\";\n";
+            ss << "        }\n";
+            ss << "    }\n";
+        }
+        ss << "    std::string result = \"[\";\n";
+        ss << "    for (size_t i = 0; i < objs.size(); ++i) { if (i) result += \",\"; result += objs[i]; }\n";
+        ss << "    result += \"]\";\n";
+        ss << "    return result;\n";
+        ss << "}\n\n";
     }
 
     for (const auto& job : program->jobs) {
@@ -2677,6 +2214,36 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             ss << generateActionImpl("Job_" + job->name, action) << "\n";
         }
     }
+
+    // dispatch_job: reconstruct a persisted job from its serialized args and run it.
+    // Used by crash recovery (recover_persisted_jobs) to rebuild closures.
+    ss << "void dispatch_job(const std::string& name, const std::string& argsJson) {\n";
+    ss << "    (void)argsJson;\n";
+    {
+        bool firstJob = true;
+        for (const auto& job : program->jobs) {
+            ss << "    " << (firstJob ? "if" : "else if") << " (name == \"" << job->name << "\") {\n";
+            firstJob = false;
+            ss << "        auto inst = std::make_shared<Job_" << job->name << ">();\n";
+            for (const auto& f : job->fields) {
+                if (f->type == DataType::STRING) {
+                    ss << "        inst->" << f->name << " = getJSONVal(argsJson, \"" << f->name << "\");\n";
+                } else if (f->type == DataType::INT || f->type == DataType::RELATION) {
+                    ss << "        inst->" << f->name << " = safeStoi(getJSONVal(argsJson, \"" << f->name << "\"));\n";
+                } else if (f->type == DataType::FLOAT) {
+                    ss << "        inst->" << f->name << " = safeStod(getJSONVal(argsJson, \"" << f->name << "\"));\n";
+                } else if (f->type == DataType::BOOL) {
+                    ss << "        inst->" << f->name << " = (getJSONVal(argsJson, \"" << f->name << "\") == \"true\");\n";
+                }
+            }
+            std::string entry = "";
+            for (const auto& a : job->actions) { if (a->name == "Run") entry = "Run"; }
+            if (entry.empty() && !job->actions.empty()) entry = job->actions[0]->name;
+            if (!entry.empty()) ss << "        inst->" << entry << "();\n";
+            ss << "    }\n";
+        }
+    }
+    ss << "}\n\n";
 
     ss << "// Raw UI View HTML Pages\n";
     for (const auto& view : program->views) {
@@ -2701,6 +2268,19 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "    std::string req;\n";
         ss << "    co_await AsyncRead{client_fd, req};\n";
         ss << "    if (!req.empty()) {\n";
+        ss << "        std::map<std::string, std::string> pathParams; // captured dynamic route params (:id)\n";
+        ss << "        try {\n";
+        if (hasLogger) {
+            // logger middleware: emit a one-line access log per request.
+            ss << "            {\n";
+            ss << "                size_t _lf = req.find('\\n');\n";
+            ss << "                std::string _line = (_lf == std::string::npos) ? req : req.substr(0, _lf);\n";
+            ss << "                while (!_line.empty() && (_line.back() == '\\r' || _line.back() == '\\n')) _line.pop_back();\n";
+            ss << "                std::time_t _t = std::time(nullptr);\n";
+            ss << "                char _tb[32]; std::strftime(_tb, sizeof(_tb), \"%Y-%m-%d %H:%M:%S\", std::localtime(&_t));\n";
+            ss << "                std::cout << \"[\" << _tb << \"] \" << inet_ntoa(address.sin_addr) << \" \" << _line << std::endl;\n";
+            ss << "            }\n";
+        }
         if (program->frontend == "react") {
             ss << "            bool handled_static = false;\n";
             ss << "            if (req.rfind(\"GET /\", 0) == 0 && req.rfind(\"GET /api/\", 0) != 0) {\n";
@@ -2759,7 +2339,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             ss << "            bool is_api_req = (req.find(\"/api/\") != std::string::npos);\n";
             if (!program->apis.empty()) {
                 ss << "            if (!is_api_req) {\n";
-                for (const auto& r : program->apis[0]->routes) {
+                for (const auto& r : program->allRoutes()) {
                     if (r->method != "WEBSOCKET") {
                         ss << "                {\n";
                         ss << "                    size_t pos = req.find(\" \" \"" << r->path << "\");\n";
@@ -2812,10 +2392,19 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "                            std::string msg;\n";
         ss << "                            while (readWebSocketFrame(client_fd, msg)) {\n";
         ss << "                                if (!msg.empty()) {\n";
-        ss << "                                    std::cout << \"[LiveView WS] Received: \" << msg << std::endl;\n";
-        ss << "                                    broadcast_ws_message(msg, client_fd);\n";
+        ss << "                                    std::string _act = getJSONVal(msg, \"action\");\n";
+        ss << "                                    if (_act == \"subscribe\") {\n";
+        ss << "                                        subscribe_topic(getJSONVal(msg, \"topic\"), client_fd);\n";
+        ss << "                                        sendWebSocketFrame(client_fd, std::string(\"{\\\"type\\\":\\\"subscribed\\\",\\\"topic\\\":\\\"\") + getJSONVal(msg, \"topic\") + \"\\\"}\");\n";
+        ss << "                                    } else if (_act == \"publish\") {\n";
+        ss << "                                        publish_topic(getJSONVal(msg, \"topic\"), msg);\n";
+        ss << "                                    } else {\n";
+        ss << "                                        std::cout << \"[LiveView WS] Received: \" << msg << std::endl;\n";
+        ss << "                                        broadcast_ws_message(msg, client_fd);\n";
+        ss << "                                    }\n";
         ss << "                                }\n";
         ss << "                            }\n";
+        ss << "                            unsubscribe_all_topics(client_fd);\n";
         ss << "                            unregister_ws_client(client_fd);\n";
         ss << "                        }).detach();\n";
         ss << "                    }\n";
@@ -3038,7 +2627,14 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
             } else {
                 ss << "            else if (req.find(\"GET /api/" << slice->name << "\") != std::string::npos) {\n";
             }
-            ss << "                std::string json = " << slice->name << "::getAllAsJSON(req);\n";
+            {
+                bool _hasRel = false;
+                for (const auto& f : slice->fields) if (f->type == DataType::RELATION && !f->relatedSlice.empty()) _hasRel = true;
+                if (_hasRel)
+                    ss << "                std::string json = applyPreloads_" << slice->name << "(" << slice->name << "::getAllAsJSON(req), req);\n";
+                else
+                    ss << "                std::string json = " << slice->name << "::getAllAsJSON(req);\n";
+            }
             ss << "                std::stringstream resp;\n";
             ss << "                resp << \"HTTP/1.1 200 OK\\r\\n\"\n";
             ss << "                     << \"Content-Type: application/json\\r\\n\"\n";
@@ -3091,7 +2687,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                     ss << "                        " << userSlice->name << " user;\n";
                     for (const auto& f : userSlice->fields) {
                         if (f->name == passwordField) {
-                            ss << "                        user." << f->name << " = sha256(passVal);\n";
+                            ss << "                        user." << f->name << " = hashPassword(passVal);\n";
                         } else if (f->name == emailField) {
                             ss << "                        user." << f->name << " = emailVal;\n";
                         } else {
@@ -3125,7 +2721,7 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                     ss << "                std::string emailVal = getJSONVal(body, \"" << emailField << "\");\n";
                     ss << "                std::string passVal = getJSONVal(body, \"" << passwordField << "\");\n";
                     ss << "                " << userSlice->name << " user;\n";
-                    ss << "                if (emailVal.empty() || passVal.empty() || !" << userSlice->name << "::findUser(emailVal, user) || user." << passwordField << " != sha256(passVal)) {\n";
+                    ss << "                if (emailVal.empty() || passVal.empty() || !" << userSlice->name << "::findUser(emailVal, user) || !verifyPassword(passVal, user." << passwordField << ")) {\n";
                     ss << "                    std::string msg = \"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"Invalid email or password\\\"}\";\n";
                     ss << "                    std::stringstream resp;\n";
                     ss << "                    resp << \"HTTP/1.1 401 Unauthorized\\r\\n\"\n";
@@ -3159,12 +2755,41 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
 
         // Routing for API endpoints
         if (!program->apis.empty()) {
-            for (const auto& r : program->apis[0]->routes) {
+            for (const auto& r : program->allRoutes()) {
+                bool isDynamic = (r->path.find(':') != std::string::npos);
+                // Use exact segment matching for ALL routes (not substring find), so a
+                // route like "/" no longer shadows "/api/leads/:id". matchDynamicRoute
+                // handles static patterns (no :params) as plain segment equality.
+                std::string cond = "matchDynamicRoute(req, \"" + r->method + "\", \"" + r->path + "\", pathParams)";
                 if (isFirstRoute) {
-                    ss << "            if (req.find(\"" << r->method << " " << r->path << "\") != std::string::npos) {\n";
+                    ss << "            if (" << cond << ") {\n";
                     isFirstRoute = false;
                 } else {
-                    ss << "            else if (req.find(\"" << r->method << " " << r->path << "\") != std::string::npos) {\n";
+                    ss << "            else if (" << cond << ") {\n";
+                }
+                // Expose captured path params as typed-friendly locals and bind them
+                // to matching slice fields below.
+                std::vector<std::string> pathParamNames;
+                if (isDynamic) {
+                    std::vector<std::string> segs;
+                    {
+                        size_t i = 0;
+                        while (i < r->path.size()) {
+                            if (r->path[i] == '/') { i++; continue; }
+                            size_t j = r->path.find('/', i);
+                            if (j == std::string::npos) j = r->path.size();
+                            segs.push_back(r->path.substr(i, j - i));
+                            i = j;
+                        }
+                    }
+                    for (const auto& seg : segs) {
+                        if (!seg.empty() && seg[0] == ':') {
+                            std::string pname = seg.substr(1);
+                            pathParamNames.push_back(pname);
+                            ss << "                std::string param_" << pname
+                               << " = pathParams.count(\"" << pname << "\") ? pathParams[\"" << pname << "\"] : \"\";\n";
+                        }
+                    }
                 }
                 if (r->isSecure) {
                     ss << "                std::string authHeader = getHeaderValue(req, \"Authorization\");\n";
@@ -3212,17 +2837,29 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
 
                 if (!sliceName.empty()) {
                     if (r->method == "DELETE") {
-                        std::string firstField = "";
+                        // Prefer deleting by a path param (e.g. DELETE /api/leads/:id)
+                        // matching a field name; otherwise fall back to the body.
+                        std::string delField = "";
+                        std::string delValueExpr = "";
                         for (const auto& s : program->slices) {
                             if (s->name == sliceName) {
-                                if (!s->fields.empty()) {
-                                    firstField = s->fields[0]->name;
+                                for (const auto& f : s->fields) {
+                                    for (const auto& pn : pathParamNames) {
+                                        if (pn == f->name) {
+                                            delField = f->name;
+                                            delValueExpr = "param_" + pn;
+                                        }
+                                    }
+                                }
+                                if (delField.empty() && !s->fields.empty()) {
+                                    delField = s->fields[0]->name;
+                                    delValueExpr = "getJSONVal(body, \"" + delField + "\")";
                                 }
                             }
                         }
-                        if (!firstField.empty()) {
-                            ss << "                std::string valToDelete = getJSONVal(body, \"" << firstField << "\");\n";
-                            ss << "                " << sliceName << "::deleteRecord(\"" << firstField << "\", valToDelete);\n";
+                        if (!delField.empty()) {
+                            ss << "                std::string valToDelete = " << delValueExpr << ";\n";
+                            ss << "                " << sliceName << "::deleteRecord(\"" << delField << "\", valToDelete);\n";
                         }
                         ss << "                " << sliceName << " instance;\n";
                         ss << "                instance." << actionName << "();\n";
@@ -3231,8 +2868,16 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                         for (const auto& slice : program->slices) {
                             if (slice->name == sliceName) {
                                 for (const auto& field : slice->fields) {
+                                    bool isPathParam = false;
+                                    for (const auto& pn : pathParamNames) {
+                                        if (pn == field->name) isPathParam = true;
+                                    }
                                     ss << "                {\n";
-                                    ss << "                    std::string val = isMultipart ? getMultipartVal(mpParts, \"" << field->name << "\") : getJSONVal(body, \"" << field->name << "\");\n";
+                                    if (isPathParam) {
+                                        ss << "                    std::string val = param_" << field->name << ";\n";
+                                    } else {
+                                        ss << "                    std::string val = isMultipart ? getMultipartVal(mpParts, \"" << field->name << "\") : getJSONVal(body, \"" << field->name << "\");\n";
+                                    }
                                     if (field->type == DataType::INT || field->type == DataType::RELATION) {
                                         ss << "                    instance." << field->name << " = safeStoi(val);\n";
                                     } else if (field->type == DataType::STRING) {
@@ -3246,6 +2891,23 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                                 }
                             }
                         }
+                        // Changeset validation: reject with 422 + all errors before writing.
+                        ss << "                {\n";
+                        ss << "                    auto _cs = instance.validateChangeset();\n";
+                        ss << "                    if (!_cs.empty()) {\n";
+                        ss << "                        std::stringstream ej;\n";
+                        ss << "                        ej << \"{\\\"status\\\":\\\"error\\\",\\\"errors\\\":{\";\n";
+                        ss << "                        bool _ef = true;\n";
+                        ss << "                        for (auto& kv : _cs) { if (!_ef) ej << \",\"; _ef = false; ej << \"\\\"\" << kv.first << \"\\\":\\\"\" << kv.second << \"\\\"\"; }\n";
+                        ss << "                        ej << \"}}\";\n";
+                        ss << "                        std::string msg = ej.str();\n";
+                        ss << "                        std::stringstream resp;\n";
+                        ss << "                        resp << \"HTTP/1.1 422 Unprocessable Entity\\r\\n\" << \"Content-Type: application/json\\r\\n\" << \"Access-Control-Allow-Origin: *\\r\\n\" << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\" << msg;\n";
+                        ss << "                        send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+                        ss << "                        close(client_fd);\n";
+                        ss << "                        co_return;\n";
+                        ss << "                    }\n";
+                        ss << "                }\n";
                         ss << "                instance.save();\n";
                         ss << "                instance." << actionName << "();\n";
                         ss << "                broadcast_ws_message(\"{\\\"event\\\": \\\"action\\\", \\\"target\\\": \\\"" << sliceName << "." << actionName << "\\\"}\");\n";
@@ -3278,16 +2940,40 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "                send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
         ss << "            }\n";
 
+        // Global exception handler: any uncaught std::exception (or unknown throw)
+        // during request dispatch becomes a clean HTTP 500 instead of crashing the
+        // whole server process.
+        ss << "        } catch (const std::exception& ex) {\n";
+        ss << "            std::cerr << \"[Hexagen 500] Unhandled exception: \" << ex.what() << std::endl;\n";
+        ss << "            std::string msg = std::string(\"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"Internal Server Error\\\"}\");\n";
+        ss << "            std::stringstream resp;\n";
+        ss << "            resp << \"HTTP/1.1 500 Internal Server Error\\r\\n\"\n";
+        ss << "                 << \"Content-Type: application/json\\r\\n\"\n";
+        ss << "                 << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+        ss << "                 << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\"\n";
+        ss << "                 << msg;\n";
+        ss << "            send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+        ss << "        } catch (...) {\n";
+        ss << "            std::cerr << \"[Hexagen 500] Unhandled non-standard exception\" << std::endl;\n";
+        ss << "            std::string msg = std::string(\"{\\\"status\\\":\\\"error\\\",\\\"message\\\":\\\"Internal Server Error\\\"}\");\n";
+        ss << "            std::stringstream resp;\n";
+        ss << "            resp << \"HTTP/1.1 500 Internal Server Error\\r\\n\"\n";
+        ss << "                 << \"Content-Type: application/json\\r\\n\"\n";
+        ss << "                 << \"Access-Control-Allow-Origin: *\\r\\n\"\n";
+        ss << "                 << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\"\n";
+        ss << "                 << msg;\n";
+        ss << "            send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+        ss << "        }\n";
+
         ss << "    }\n";
         ss << "    close(client_fd);\n";
         ss << "}\n\n";
 
         ss << "int main() {\n";
         ss << "    initDatabase();\n";
-        ss << "    // Spawn worker threads for background jobs\n";
-        ss << "    for (int i = 0; i < 4; ++i) {\n";
-        ss << "        std::thread(job_worker_thread).detach();\n";
-        ss << "    }\n";
+        ss << "    // Background jobs: recover persisted jobs, then start a supervised worker pool\n";
+        ss << "    recover_persisted_jobs();\n";
+        ss << "    start_job_supervisor(std::atoi(getEnvOr(\"JOB_WORKERS\", \"4\")));\n";
         ss << "    int server_fd, client_fd;\n";
         ss << "    struct sockaddr_in address;\n";
         ss << "    int opt = 1;\n";
@@ -3330,276 +3016,6 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
         ss << "    return 0;\n";
         ss << "}\n";
     }
-
-    return ss.str();
-}
-
-std::string CodeGenerator::generateAdminHTML() {
-    std::stringstream ss;
-    ss << R"HTML(<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Hexagen Admin Portal</title>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
-<style>
-body {
-    margin: 0;
-    font-family: 'Outfit', sans-serif;
-    background: #0b0f19;
-    color: #f3f4f6;
-    display: flex;
-    height: 100vh;
-}
-sidebar {
-    width: 260px;
-    background: #111827;
-    border-right: 1px solid #1f2937;
-    padding: 24px;
-    display: flex;
-    flex-direction: column;
-}
-sidebar h2 {
-    font-size: 20px;
-    margin: 0 0 24px 0;
-    background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    font-weight: 800;
-}
-.slice-btn {
-    padding: 12px 16px;
-    border-radius: 12px;
-    cursor: pointer;
-    margin-bottom: 8px;
-    transition: all 0.2s;
-    background: transparent;
-    border: none;
-    color: #9ca3af;
-    text-align: left;
-    font-size: 16px;
-    width: 100%;
-}
-.slice-btn:hover, .slice-btn.active {
-    background: rgba(0, 242, 254, 0.1);
-    color: #00f2fe;
-}
-content {
-    flex: 1;
-    padding: 40px;
-    overflow-y: auto;
-}
-.card {
-    background: rgba(17, 24, 39, 0.7);
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255,255,255,0.05);
-    border-radius: 24px;
-    padding: 32px;
-    box-shadow: 0 20px 40px rgba(0,0,0,0.3);
-}
-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 24px;
-}
-th, td {
-    padding: 16px;
-    text-align: left;
-    border-bottom: 1px solid #1f2937;
-}
-th {
-    color: #9ca3af;
-    font-weight: 600;
-}
-.btn {
-    background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
-    border: none;
-    color: white;
-    padding: 10px 20px;
-    border-radius: 12px;
-    cursor: pointer;
-    font-weight: 600;
-    transition: transform 0.2s;
-}
-.btn:hover {
-    transform: scale(1.03);
-}
-.btn-danger {
-    background: linear-gradient(135deg, #f87171 0%, #ef4444 100%);
-}
-.modal {
-    display: none;
-    position: fixed;
-    top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0,0,0,0.6);
-    justify-content: center; align-items: center;
-    backdrop-filter: blur(5px);
-}
-.modal-content {
-    background: #111827;
-    border: 1px solid #1f2937;
-    padding: 32px;
-    border-radius: 24px;
-    width: 400px;
-}
-.input-group {
-    margin-bottom: 16px;
-}
-.input-group label {
-    display: block; margin-bottom: 8px; color: #9ca3af;
-}
-.input-group input {
-    width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #1f2937; background: #1f2937; color: white; box-sizing: border-box;
-}
-</style>
-</head>
-<body>
-<sidebar>
-    <h2>Hexagen Admin</h2>
-    <div id="slice-list"></div>
-</sidebar>
-<content>
-    <div class="card" id="main-card">
-        <h1 id="slice-title">Welcome to Admin Portal</h1>
-        <p>Select a slice from the sidebar to manage database records.</p>
-    </div>
-</content>
-
-<div class="modal" id="add-modal">
-    <div class="modal-content">
-        <h3 style="margin-top:0;">Add New Record</h3>
-        <form id="add-form"></form>
-        <div style="display:flex; justify-content: flex-end; gap: 12px; margin-top: 24px;">
-            <button class="btn btn-danger" onclick="closeModal()">Cancel</button>
-            <button class="btn" onclick="submitRecord()">Save</button>
-        </div>
-    </div>
-</div>
-
-<script>
-)HTML";
-
-    ss << "const slices = {\n";
-    for (const auto& slice : program->slices) {
-        ss << "    \"" << slice->name << "\": [\n";
-        for (size_t i = 0; i < slice->fields.size(); ++i) {
-            ss << "        { \"name\": \"" << slice->fields[i]->name << "\", \"type\": \"" << dataTypeToString(slice->fields[i]->type) << "\" }";
-            if (i + 1 < slice->fields.size()) ss << ",";
-            ss << "\n";
-        }
-        ss << "    ],\n";
-    }
-    ss << "};\n";
-
-    ss << R"HTML(
-let activeSlice = '';
-
-function renderSidebar() {
-    const list = document.getElementById('slice-list');
-    list.innerHTML = '';
-    Object.keys(slices).forEach(s => {
-        const btn = document.createElement('button');
-        btn.className = 'slice-btn';
-        btn.innerText = s;
-        btn.onclick = () => selectSlice(s);
-        list.appendChild(btn);
-    });
-}
-
-async function selectSlice(name) {
-    activeSlice = name;
-    document.querySelectorAll('.slice-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.innerText === name);
-    });
-    
-    const fields = slices[name];
-    const card = document.getElementById('main-card');
-    card.innerHTML = `
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-            <h1 style="margin:0;">${name}</h1>
-            <button class="btn" onclick="openAddModal()">Add Record</button>
-        </div>
-        <div style="overflow-x:auto;">
-            <table>
-                <thead>
-                    <tr>
-                        ${fields.map(f => `<th>${f.name}</th>`).join('')}
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="table-body"></tbody>
-            </table>
-        </div>
-    `;
-    loadTableData();
-}
-
-async function loadTableData() {
-    const res = await fetch('/api/admin/' + activeSlice);
-    const data = await res.json();
-    const tbody = document.getElementById('table-body');
-    tbody.innerHTML = '';
-    data.forEach(row => {
-        const tr = document.createElement('tr');
-        const fields = slices[activeSlice];
-        tr.innerHTML = fields.map(f => `<td>${row[f.name]}</td>`).join('') + 
-            `<td><button class="btn btn-danger" onclick="deleteRecord('${row[fields[0].name]}')">Delete</button></td>`;
-        tbody.appendChild(tr);
-    });
-}
-
-function openAddModal() {
-    const form = document.getElementById('add-form');
-    form.innerHTML = '';
-    slices[activeSlice].forEach(f => {
-        form.innerHTML += `
-            <div class="input-group">
-                <label>${f.name} (${f.type})</label>
-                <input type="${f.type === 'int' || f.type === 'float' ? 'number' : 'text'}" name="${f.name}" required>
-            </div>
-        `;
-    });
-    document.getElementById('add-modal').style.display = 'flex';
-}
-
-function closeModal() {
-    document.getElementById('add-modal').style.display = 'none';
-}
-
-async function submitRecord() {
-    const form = document.getElementById('add-form');
-    const data = {};
-    slices[activeSlice].forEach(f => {
-        const val = form.elements[f.name].value;
-        data[f.name] = f.type === 'int' ? parseInt(val) : f.type === 'float' ? parseFloat(val) : val;
-    });
-    await fetch('/api/admin/' + activeSlice, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
-    });
-    closeModal();
-    loadTableData();
-}
-
-async function deleteRecord(id) {
-    if(!confirm('Are you sure you want to delete this record?')) return;
-    const fields = slices[activeSlice];
-    const payload = {};
-    payload[fields[0].name] = id;
-    await fetch('/api/admin/' + activeSlice, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    });
-    loadTableData();
-}
-
-renderSidebar();
-</script>
-</body>
-</html>
-)HTML";
 
     return ss.str();
 }

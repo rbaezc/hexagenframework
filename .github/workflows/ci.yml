@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  conformance:
+    name: Build + conformance (golden) tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build hf_core
+        run: make hf_core
+
+      - name: Verify transpiler output against golden files
+        run: make golden-verify
+
+      - name: Runtime unit tests
+        run: make runtime-test
