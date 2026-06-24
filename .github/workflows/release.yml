@@ -15,7 +15,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             artifact_name_core: hf_core_linux_x86_64
             artifact_name_cli: hf_linux_x86_64
             compile_cmd_core: g++ -std=c++20 -O3 src/codegen.cpp src/codegen_html.cpp src/lexer.cpp src/parser.cpp src/security_analyzer.cpp src/main.cpp -o hf_core_linux_x86_64
