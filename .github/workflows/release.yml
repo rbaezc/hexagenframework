@@ -41,14 +41,10 @@ jobs:
           go-version: '1.21'
 
       - name: Generate embedded runtime
+        shell: bash
         run: |
           mkdir -p build
-          bash tools/embed_runtime.sh build/embedded_runtime.hpp \
-            src/runtime/router.hpp \
-            src/runtime/storage.hpp \
-            src/runtime/storage_sqlite.hpp \
-            src/runtime/storage_postgres.hpp \
-            src/runtime/storage_mysql.hpp
+          bash tools/embed_runtime.sh build/embedded_runtime.hpp src/runtime/router.hpp src/runtime/storage.hpp src/runtime/storage_sqlite.hpp src/runtime/storage_postgres.hpp src/runtime/storage_mysql.hpp
 
       - name: Compile Core
         run: ${{ matrix.compile_cmd_core }}
