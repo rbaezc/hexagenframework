@@ -889,6 +889,14 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
        << "    return \"\";\n"
        << "}\n\n";
 
+    // Action context thread-locals — readable/writable inside cpp{} action blocks.
+    // __hx_resp: set to override the HTTP response (skip default success JSON).
+    // __hx_req:  full raw HTTP request string (use getQueryParam/__hx_req for params).
+    // __hx_pp:   path parameters extracted from the route (e.g. :slug, :id).
+    ss << "thread_local std::string __hx_resp;\n";
+    ss << "thread_local std::string __hx_req;\n";
+    ss << "thread_local std::unordered_map<std::string,std::string> __hx_pp;\n\n";
+
     // Split a flat JSON array string "[{..},{..}]" into top-level object strings,
     // respecting quotes/escapes. Used by association preloading.
     ss << "std::vector<std::string> __splitJsonObjects(const std::string& arr) {\n"
@@ -2648,26 +2656,46 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                                 }
                             }
                         }
-                        // Changeset validation: reject with 422 + all errors before writing.
-                        ss << "                {\n";
-                        ss << "                    auto _cs = instance.validateChangeset();\n";
-                        ss << "                    if (!_cs.empty()) {\n";
-                        ss << "                        std::stringstream ej;\n";
-                        ss << "                        ej << \"{\\\"status\\\":\\\"error\\\",\\\"errors\\\":{\";\n";
-                        ss << "                        bool _ef = true;\n";
-                        ss << "                        for (auto& kv : _cs) { if (!_ef) ej << \",\"; _ef = false; ej << \"\\\"\" << kv.first << \"\\\":\\\"\" << kv.second << \"\\\"\"; }\n";
-                        ss << "                        ej << \"}}\";\n";
-                        ss << "                        std::string msg = ej.str();\n";
-                        ss << "                        std::stringstream resp;\n";
-                        ss << "                        resp << \"HTTP/1.1 422 Unprocessable Entity\\r\\n\" << \"Content-Type: application/json\\r\\n\" << \"Access-Control-Allow-Origin: *\\r\\n\" << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\" << msg;\n";
-                        ss << "                        send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
-                        ss << "                        close(client_fd);\n";
-                        ss << "                        co_return;\n";
-                        ss << "                    }\n";
-                        ss << "                }\n";
-                        ss << "                instance.save();\n";
+                        // Validation and save: write operations only (POST/PUT).
+                        if (r->method == "POST" || r->method == "PUT") {
+                            ss << "                {\n";
+                            ss << "                    auto _cs = instance.validateChangeset();\n";
+                            ss << "                    if (!_cs.empty()) {\n";
+                            ss << "                        std::stringstream ej;\n";
+                            ss << "                        ej << \"{\\\"status\\\":\\\"error\\\",\\\"errors\\\":{\";\n";
+                            ss << "                        bool _ef = true;\n";
+                            ss << "                        for (auto& kv : _cs) { if (!_ef) ej << \",\"; _ef = false; ej << \"\\\"\" << kv.first << \"\\\":\\\"\" << kv.second << \"\\\"\"; }\n";
+                            ss << "                        ej << \"}}\";\n";
+                            ss << "                        std::string msg = ej.str();\n";
+                            ss << "                        std::stringstream resp;\n";
+                            ss << "                        resp << \"HTTP/1.1 422 Unprocessable Entity\\r\\n\" << \"Content-Type: application/json\\r\\n\" << \"Access-Control-Allow-Origin: *\\r\\n\" << \"Content-Length: \" << msg.length() << \"\\r\\n\\r\\n\" << msg;\n";
+                            ss << "                        send(client_fd, resp.str().c_str(), resp.str().length(), 0);\n";
+                            ss << "                        close(client_fd);\n";
+                            ss << "                        co_return;\n";
+                            ss << "                    }\n";
+                            ss << "                }\n";
+                            ss << "                instance.save();\n";
+                        }
+                        // Set action context (accessible inside cpp{} blocks).
+                        ss << "                __hx_resp.clear();\n";
+                        ss << "                __hx_req = req;\n";
+                        ss << "                __hx_pp.clear();\n";
+                        for (const auto& pn : pathParamNames) {
+                            ss << "                __hx_pp[\"" << pn << "\"] = param_" << pn << ";\n";
+                        }
                         ss << "                instance." << actionName << "();\n";
-                        ss << "                broadcast_ws_message(\"{\\\"event\\\": \\\"action\\\", \\\"target\\\": \\\"" << sliceName << "." << actionName << "\\\"}\");\n";
+                        // If the action set __hx_resp, send it as the HTTP response.
+                        ss << "                if (!__hx_resp.empty()) {\n";
+                        ss << "                    std::string _b = __hx_resp; __hx_resp.clear();\n";
+                        ss << "                    std::stringstream _r;\n";
+                        ss << "                    _r << \"HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\nAccess-Control-Allow-Origin: *\\r\\nContent-Length: \" << _b.length() << \"\\r\\n\\r\\n\" << _b;\n";
+                        ss << "                    send(client_fd, _r.str().c_str(), _r.str().length(), 0);\n";
+                        ss << "                    close(client_fd);\n";
+                        ss << "                    co_return;\n";
+                        ss << "                }\n";
+                        if (r->method == "POST" || r->method == "PUT") {
+                            ss << "                broadcast_ws_message(\"{\\\"event\\\": \\\"action\\\", \\\"target\\\": \\\"" << sliceName << "." << actionName << "\\\"}\");\n";
+                        }
                     }
                 }
                 
