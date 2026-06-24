@@ -51,6 +51,7 @@ enum class TokenType {
     ELSE,
     WHILE,
     CONFIG, // "config"
+    IMPORT, // "import"
     JOB,
     ENQUEUE,
     USE,

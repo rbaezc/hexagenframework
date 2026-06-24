@@ -171,6 +171,7 @@ std::vector<Token> Lexer::tokenize() {
             else if (ident == "else") type = TokenType::ELSE;
             else if (ident == "while") type = TokenType::WHILE;
             else if (ident == "config") type = TokenType::CONFIG;
+            else if (ident == "import") type = TokenType::IMPORT;
             else if (ident == "int") type = TokenType::TYPE_INT;
             else if (ident == "string") type = TokenType::TYPE_STRING;
             else if (ident == "float") type = TokenType::TYPE_FLOAT;

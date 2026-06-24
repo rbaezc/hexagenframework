@@ -30,6 +30,13 @@ public:
     virtual void print(int indent = 0) const = 0;
 };
 
+struct ASTImport : public ASTNode {
+    std::string path;
+    void print(int indent = 0) const override {
+        std::cout << std::string(indent, ' ') << "Import: " << path << "\n";
+    }
+};
+
 class ASTExpression : public ASTNode {
 public:
     virtual ~ASTExpression() = default;
@@ -396,6 +403,7 @@ public:
     std::string target = "web";        // Default target (web or desktop)
     bool useHttp = false;              // Enable outbound HTTP(S) client (links OpenSSL)
     std::vector<std::string> requiredLibs; // Extra libs to link (config requires: ...)
+    std::vector<std::shared_ptr<ASTImport>> imports;
     std::vector<std::shared_ptr<ASTSlice>> slices;
     std::vector<std::shared_ptr<ASTView>> views;
     std::vector<std::shared_ptr<ASTApi>> apis;

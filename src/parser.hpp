@@ -53,6 +53,7 @@ private:
     std::shared_ptr<ASTJob> parseJob();
     std::shared_ptr<ASTMiddleware> parseMiddleware();
     void parseConfig(std::shared_ptr<ASTProgram> program);
+    std::shared_ptr<ASTImport> parseImport();
     
     // Expression Parsing Helpers
     std::shared_ptr<ASTExpression> parseExpression();

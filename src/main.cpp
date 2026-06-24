@@ -13,9 +13,56 @@
 #include <chrono>
 #include <algorithm>
 #include <map>
+#include <set>
 #include <regex>
 
 namespace fs = std::filesystem;
+
+// Recursively resolves import "path" declarations in a parsed ASTProgram.
+// Imported files are parsed and their slices/views/jobs/apis/requires merged
+// into the root program. The root config (dbType, target, etc.) always wins.
+// Circular imports are detected via the visited set of canonical paths.
+static void resolveImports(const std::string& filePath,
+                            std::shared_ptr<ASTProgram> root,
+                            std::set<std::string>& visited) {
+    if (root->imports.empty()) return;
+    fs::path base = fs::path(filePath).parent_path();
+
+    for (const auto& imp : root->imports) {
+        fs::path importPath = fs::weakly_canonical(base / imp->path);
+        std::string importStr = importPath.string();
+
+        if (visited.count(importStr)) continue;
+        visited.insert(importStr);
+
+        std::ifstream f(importPath);
+        if (!f.is_open()) {
+            throw std::runtime_error("[import] Cannot open: " + importStr);
+        }
+        std::string src((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+
+        Lexer lex(src);
+        auto toks = lex.tokenize();
+        Parser p(toks);
+        auto imported = p.parse();
+
+        // Recurse into the imported file's own imports first
+        resolveImports(importStr, imported, visited);
+
+        // Merge into root — config fields are intentionally NOT merged (root wins)
+        for (auto& s : imported->slices)      root->slices.push_back(s);
+        for (auto& v : imported->views)       root->views.push_back(v);
+        for (auto& j : imported->jobs)        root->jobs.push_back(j);
+        for (auto& a : imported->apis)        root->apis.push_back(a);
+        if (imported->useHttp) root->useHttp = true;
+        for (const auto& r : imported->requiredLibs) {
+            if (std::find(root->requiredLibs.begin(),
+                          root->requiredLibs.end(), r) == root->requiredLibs.end())
+                root->requiredLibs.push_back(r);
+        }
+    }
+}
 
 // Map declared `requires:` library names to g++ link flags. Known aliases expand
 // to their canonical flags; anything else is linked as -l<name>.
@@ -1043,6 +1090,13 @@ int main(int argc, char* argv[]) {
 
         Parser parser(tokens);
         auto program = parser.parse();
+
+        // Resolve import "..." declarations — merge modules into root program
+        if (!program->imports.empty()) {
+            std::set<std::string> visited;
+            visited.insert(fs::weakly_canonical(fs::path(inputFile)).string());
+            resolveImports(inputFile, program, visited);
+        }
 
         if (command == "validate") {
             SecurityAnalyzer analyzer(program, tokens);

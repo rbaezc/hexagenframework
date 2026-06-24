@@ -13,6 +13,8 @@ std::shared_ptr<ASTProgram> Parser::parse() {
             program->apis.push_back(parseApi());
         } else if (check(TokenType::CONFIG)) {
             parseConfig(program);
+        } else if (check(TokenType::IMPORT)) {
+            program->imports.push_back(parseImport());
         } else if (check(TokenType::JOB)) {
             program->jobs.push_back(parseJob());
         } else {
@@ -542,4 +544,13 @@ std::shared_ptr<ASTMiddleware> Parser::parseMiddleware() {
         consume(TokenType::RPAREN, "Expected ')' to close middleware arguments");
     }
     return std::make_shared<ASTMiddleware>(mwName, args);
+}
+
+std::shared_ptr<ASTImport> Parser::parseImport() {
+    consume(TokenType::IMPORT, "Expected 'import'");
+    const auto& pathTok = peek();
+    consume(TokenType::STRING_LITERAL, "Expected string path after 'import'");
+    auto node = std::make_shared<ASTImport>();
+    node->path = pathTok.value;
+    return node;
 }
