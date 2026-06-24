@@ -196,6 +196,36 @@ std::vector<Token> Lexer::tokenize() {
             else if (ident == "validate") type = TokenType::VALIDATE;
 
             tokens.push_back({type, ident, startLine, startCol});
+
+            // cpp { ... } block: collect raw C++ as a STRING_LITERAL token so
+            // the parser sees exactly what cpp "..." emits. Handles nested braces
+            // and string literals inside the block.
+            if (type == TokenType::CPP) {
+                size_t p2 = pos;
+                while (p2 < source.size() && (source[p2]==' '||source[p2]=='\t'||source[p2]=='\r'||source[p2]=='\n')) p2++;
+                if (p2 < source.size() && source[p2] == '{') {
+                    pos = p2 + 1; // consume {
+                    std::string raw;
+                    int depth = 1;
+                    bool inStr = false; char strCh = 0;
+                    while (pos < source.size() && depth > 0) {
+                        char ch = source[pos++];
+                        if (ch == '\n') { line++; column = 1; } else { column++; }
+                        if (inStr) {
+                            if (ch == '\\' && pos < source.size()) { raw += ch; raw += source[pos++]; continue; }
+                            if (ch == strCh) inStr = false;
+                            raw += ch;
+                        } else {
+                            if (ch == '"' || ch == '\'') { inStr = true; strCh = ch; raw += ch; }
+                            else if (ch == '{') { depth++; raw += ch; }
+                            else if (ch == '}') { depth--; if (depth > 0) raw += ch; }
+                            else { raw += ch; }
+                        }
+                    }
+                    tokens.push_back({TokenType::STRING_LITERAL, raw, startLine, startCol});
+                }
+            }
+
             continue;
         }
 
