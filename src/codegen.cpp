@@ -5,6 +5,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <unordered_set>
 #include "../build/embedded_runtime.hpp"  // amalgamated runtime fragments (RT_*)
 
 // Decode escape sequences into their literal characters. Used when emitting raw
@@ -2595,8 +2596,16 @@ std::string CodeGenerator::generateSourceCode(bool includeMain) {
                             ss << "                std::string valToDelete = " << delValueExpr << ";\n";
                             ss << "                " << sliceName << "::deleteRecord(\"" << delField << "\", valToDelete);\n";
                         }
-                        ss << "                " << sliceName << " instance;\n";
-                        ss << "                instance." << actionName << "();\n";
+                        // Only call the user-defined action if it is not one of the
+                        // auto-generated static methods (deleteRecord, getAllAsJSON, etc.)
+                        static const std::unordered_set<std::string> autoMethods = {
+                            "deleteRecord", "getAllAsJSON", "getAllAsJSON_JSONL",
+                            "deleteRecord_JSONL", "updateRecord", "saveJSONL"
+                        };
+                        if (autoMethods.find(actionName) == autoMethods.end()) {
+                            ss << "                " << sliceName << " instance;\n";
+                            ss << "                instance." << actionName << "();\n";
+                        }
                     } else {
                         ss << "                " << sliceName << " instance;\n";
                         for (const auto& slice : program->slices) {
