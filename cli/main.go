@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const Version = "v2.0.0"
+const Version = "v2.1.0"
 
 func printUsage() {
 	fmt.Printf("Hexagen Framework CLI (hf) %s\n", Version)
